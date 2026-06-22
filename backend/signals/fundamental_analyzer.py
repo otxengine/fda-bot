@@ -166,21 +166,26 @@ def analyze_fundamentals(
         s_clinical * 0.45
     )
 
+    clinical_detail = clinical.get("clinical_detail", {})
+    stopped_bad = clinical_detail.get("stopped_bad") or False
+    has_results = clinical_detail.get("has_results") or False
+
     flags = {
         "cash_warning":      s_cash < 30,
         "squeeze_setup":     s_short >= 85,
         "analyst_bullish":   s_anal >= 75,
-        "trial_risk":        clinical["clinical_detail"].get("stopped_bad", False),
-        "strong_trial":      clinical["clinical_detail"].get("has_results", False),
+        "trial_risk":        bool(stopped_bad),
+        "strong_trial":      bool(has_results),
         "low_institutional": s_inst < 40,
     }
 
     detail = {
-        "cash_months":    _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf")),
-        "short_pct":      raw.get("short_pct"),
-        "rec_mean":       raw.get("rec_mean"),
-        "inst_pct":       raw.get("inst_pct"),
-        "clinical":       clinical["clinical_detail"],
+        "cash_months":      _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf")),
+        "short_pct":        raw.get("short_pct"),
+        "rec_mean":         raw.get("rec_mean"),
+        "inst_pct":         raw.get("inst_pct"),
+        "clinical_score":   clinical.get("clinical_score"),
+        "clinical_detail":  clinical_detail,
         "component_scores": {
             "cash_runway":    round(s_cash, 1),
             "short_interest": round(s_short, 1),

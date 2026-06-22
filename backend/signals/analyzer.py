@@ -401,7 +401,7 @@ def analyze_ticker(
         "cash_warning":       int(fund_result["fundamental_flags"].get("cash_warning", False)),
         "squeeze_setup":      int(fund_result["fundamental_flags"].get("squeeze_setup", False)),
         "analyst_bullish":    int(fund_result["fundamental_flags"].get("analyst_bullish", False)),
-        "clinical_score":     fund_result["fundamental_detail"].get("clinical", {}).get("clinical_score") if fund_result.get("fundamental_detail") else None,
+        "clinical_score":     (fund_result.get("fundamental_detail") or {}).get("clinical_score"),
         "trial_risk":         int(fund_result["fundamental_flags"].get("trial_risk", False)),
         "strong_trial":       int(fund_result["fundamental_flags"].get("strong_trial", False)),
         # internal (not stored)
