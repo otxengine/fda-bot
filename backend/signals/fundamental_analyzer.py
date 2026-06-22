@@ -120,7 +120,10 @@ def _score_institutional_ownership(inst_pct: Optional[float]) -> float:
 def analyze_fundamentals(
     ticker: str,
     event_type: Optional[str] = None,
+    drug_name: Optional[str] = None,
+    company: Optional[str] = None,
     yfinance_client=None,
+    **kwargs,
 ) -> dict:
     """
     Pull and score fundamental data for a ticker.
@@ -130,41 +133,60 @@ def analyze_fundamentals(
         fundamental_flags   dict  {cash_ok, squeeze_risk, analyst_buy, ...}
         fundamental_detail  dict  raw values for display
     """
+    kwargs["drug_name"] = drug_name
+    kwargs["company"]   = company
     raw = _fetch_yfinance_fundamentals(ticker)
 
     s_cash  = _score_cash_runway(raw.get("total_cash"), raw.get("operating_cf"))
     s_short = _score_short_interest(raw.get("short_pct"))
     s_anal  = _score_analyst_consensus(raw.get("rec_mean"))
-    s_event = _score_event_type(event_type)
     s_inst  = _score_institutional_ownership(raw.get("inst_pct"))
 
+    # Deep clinical analysis (ClinicalTrials.gov + OpenFDA)
+    clinical = {"clinical_score": 50.0, "clinical_detail": {}}
+    try:
+        from backend.signals.clinical_analyzer import analyze_clinical
+        clinical = analyze_clinical(
+            ticker=ticker,
+            drug_name=kwargs.get("drug_name"),
+            company=kwargs.get("company"),
+            event_type=event_type,
+        )
+    except Exception as e:
+        logger.debug(f"Clinical analysis failed for {ticker}: {e}")
+
+    s_clinical = clinical["clinical_score"]
+
+    # Weights: financial 55% + clinical 45%
     score = (
-        s_cash  * 0.30 +
-        s_short * 0.20 +
-        s_anal  * 0.20 +
-        s_event * 0.15 +
-        s_inst  * 0.15
+        s_cash     * 0.20 +
+        s_short    * 0.15 +
+        s_anal     * 0.15 +
+        s_inst     * 0.05 +
+        s_clinical * 0.45
     )
 
     flags = {
-        "cash_warning":    s_cash < 30,
-        "squeeze_setup":   s_short >= 85,
-        "analyst_bullish": s_anal >= 75,
-        "high_conviction_event": s_event >= 85,
+        "cash_warning":      s_cash < 30,
+        "squeeze_setup":     s_short >= 85,
+        "analyst_bullish":   s_anal >= 75,
+        "trial_risk":        clinical["clinical_detail"].get("stopped_bad", False),
+        "strong_trial":      clinical["clinical_detail"].get("has_results", False),
         "low_institutional": s_inst < 40,
     }
 
     detail = {
-        "cash_months":       _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf")),
-        "short_pct":         raw.get("short_pct"),
-        "rec_mean":          raw.get("rec_mean"),
-        "inst_pct":          raw.get("inst_pct"),
+        "cash_months":    _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf")),
+        "short_pct":      raw.get("short_pct"),
+        "rec_mean":       raw.get("rec_mean"),
+        "inst_pct":       raw.get("inst_pct"),
+        "clinical":       clinical["clinical_detail"],
         "component_scores": {
             "cash_runway":    round(s_cash, 1),
             "short_interest": round(s_short, 1),
             "analyst":        round(s_anal, 1),
-            "event_type":     round(s_event, 1),
             "institutional":  round(s_inst, 1),
+            "clinical":       round(s_clinical, 1),
         },
     }
 

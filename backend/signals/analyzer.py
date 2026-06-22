@@ -131,6 +131,8 @@ def analyze_ticker(
     yfinance_client,
     event_date: Optional[date] = None,
     event_type: Optional[str] = None,
+    drug_name: Optional[str] = None,
+    company: Optional[str] = None,
     db=None,
     fda_event_id: Optional[int] = None,
 ) -> Optional[dict]:
@@ -190,7 +192,12 @@ def analyze_ticker(
     fund_result = {"fundamental_score": 50.0, "fundamental_flags": {}, "fundamental_detail": {}}
     try:
         from backend.signals.fundamental_analyzer import analyze_fundamentals
-        fund_result = analyze_fundamentals(ticker, event_type=event_type)
+        fund_result = analyze_fundamentals(
+            ticker,
+            event_type=event_type,
+            drug_name=drug_name,
+            company=company,
+        )
     except Exception as e:
         logger.debug(f"Fundamental analysis failed for {ticker}: {e}")
 
@@ -394,6 +401,9 @@ def analyze_ticker(
         "cash_warning":       int(fund_result["fundamental_flags"].get("cash_warning", False)),
         "squeeze_setup":      int(fund_result["fundamental_flags"].get("squeeze_setup", False)),
         "analyst_bullish":    int(fund_result["fundamental_flags"].get("analyst_bullish", False)),
+        "clinical_score":     fund_result["fundamental_detail"].get("clinical", {}).get("clinical_score") if fund_result.get("fundamental_detail") else None,
+        "trial_risk":         int(fund_result["fundamental_flags"].get("trial_risk", False)),
+        "strong_trial":       int(fund_result["fundamental_flags"].get("strong_trial", False)),
         # internal (not stored)
         "_component_scores":  scores["component_scores"],
         "_weights":           scores["weights"],

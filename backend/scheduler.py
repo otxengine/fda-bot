@@ -123,6 +123,8 @@ def run_options_scan(force: bool = False):
                 yfinance_client=yf_client,
                 event_date=event.event_date,
                 event_type=event.event_type,
+                drug_name=event.drug_name,
+                company=event.company,
                 db=db,
                 fda_event_id=event.id,
             )

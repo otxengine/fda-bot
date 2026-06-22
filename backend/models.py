@@ -89,6 +89,9 @@ class OptionsSignal(Base):
     cash_warning      = Column(Integer, default=0)      # <6 months cash
     squeeze_setup     = Column(Integer, default=0)      # high short interest
     analyst_bullish   = Column(Integer, default=0)      # analyst consensus buy
+    clinical_score    = Column(Float, nullable=True)    # 0-100 (ClinicalTrials + OpenFDA)
+    trial_risk        = Column(Integer, default=0)      # trial stopped for safety/futility
+    strong_trial      = Column(Integer, default=0)      # completed with results
 
 
 class AlertLog(Base):
