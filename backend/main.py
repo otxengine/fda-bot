@@ -82,32 +82,39 @@ async def lifespan(app: FastAPI):
     # Start Telegram bot in background thread (if token configured)
     _tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if _tg_token:
-        import threading, time
+        import threading, time, asyncio
         def _run_tg_bot():
-            # Wait for any previous Telegram session to expire (30s Telegram timeout)
-            time.sleep(35)
+            time.sleep(35)  # wait for previous session to expire
             retry_delay = 60
             while True:
                 try:
-                    import asyncio
                     from telegram.ext import Application, CommandHandler, MessageHandler, filters
                     from telegram_bot import cmd_start, cmd_signals, cmd_ideas, cmd_status, cmd_help, unknown_cmd
+
+                    async def _bot_main():
+                        tg_app = Application.builder().token(_tg_token).build()
+                        tg_app.add_handler(CommandHandler("start",   cmd_start))
+                        tg_app.add_handler(CommandHandler("signals", cmd_signals))
+                        tg_app.add_handler(CommandHandler("ideas",   cmd_ideas))
+                        tg_app.add_handler(CommandHandler("status",  cmd_status))
+                        tg_app.add_handler(CommandHandler("help",    cmd_help))
+                        tg_app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
+                        await tg_app.initialize()
+                        await tg_app.start()
+                        await tg_app.updater.start_polling(drop_pending_updates=True)
+                        logger.info("Telegram bot polling started")
+                        # keep running until stopped
+                        while True:
+                            await asyncio.sleep(60)
+
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    tg_app = Application.builder().token(_tg_token).build()
-                    tg_app.add_handler(CommandHandler("start",   cmd_start))
-                    tg_app.add_handler(CommandHandler("signals", cmd_signals))
-                    tg_app.add_handler(CommandHandler("ideas",   cmd_ideas))
-                    tg_app.add_handler(CommandHandler("status",  cmd_status))
-                    tg_app.add_handler(CommandHandler("help",    cmd_help))
-                    tg_app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
-                    logger.info("Telegram bot starting (polling)...")
-                    tg_app.run_polling(drop_pending_updates=True)
-                    break  # clean exit
+                    loop.run_until_complete(_bot_main())
+
                 except Exception as e:
                     logger.error(f"Telegram bot error: {e} — retrying in {retry_delay}s")
                     time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 300)  # cap at 5 min
+                    retry_delay = min(retry_delay * 2, 300)
         threading.Thread(target=_run_tg_bot, daemon=True).start()
 
     yield
