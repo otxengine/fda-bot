@@ -202,17 +202,22 @@ def _notify_stock_buy_signals(signals: list):
             stop_str  = f"${stop:.2f}" if stop else "N/A"
             risk_pct  = f"{((stop-entry)/entry*100):.1f}%" if entry and stop else "-8%"
 
+            entry_val = sig.get("entry_price")
+            target_val = entry_val * (1 + (sig.get("expected_move", 10) or 10) / 100) if entry_val and sig.get("expected_move") else None
+            target_str = f"${target_val:.2f}" if target_val else "N/A"
+
             tg_text = (
-                f"🟢 <b>BUY SIGNAL — {ticker}</b>\n"
+                f"🟢 <b>קנייה — {ticker}</b>\n"
                 f"<i>{sig.get('company','')}</i>\n\n"
-                f"<b>Entry:</b>      {entry_str}\n"
-                f"<b>Stop Loss:</b>  {stop_str} ({risk_pct})\n"
-                f"<b>Exit Target:</b> {target} (day before FDA)\n"
-                f"<b>Exp Move:</b>   {em_str}\n\n"
-                f"<b>Event:</b> {sig.get('event_type','FDA')} in {sig.get('days_until','?')}d\n"
-                f"<b>Score:</b> {score:.0f}/100\n"
-                f"<b>Reason:</b> {sig.get('reason','')}\n\n"
-                f"⚠️ Exit <b>before</b> the FDA event — do not hold through binary outcome"
+                f"<b>כניסה:</b>      {entry_str}\n"
+                f"<b>סטופ לוס:</b>   {stop_str} ({risk_pct})\n"
+                f"<b>יעד:</b>        {target_str}\n"
+                f"<b>יציאה לפני:</b> {target} (יום לפני ה-FDA)\n"
+                f"<b>תחזית תנועה:</b> {em_str}\n\n"
+                f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
+                f"<b>סקור:</b> {score:.0f}/100\n"
+                f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
+                f"⚠️ <b>צא לפני</b> ה-FDA — לא להחזיק דרך ההחלטה"
             )
             plain = f"BUY {ticker} @ {entry_str} | Stop {stop_str} | FDA in {sig.get('days_until','?')}d"
             send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
@@ -223,45 +228,35 @@ def _notify_stock_buy_signals(signals: list):
 
 
 def _notify_new_trade_ideas(ideas: list):
-    """Send Telegram message for each newly actionable trade idea."""
+    """Send Telegram stock WATCH alert when a ticker becomes actionable based on options flow."""
     try:
-        from backend.signals.alerter import send_alert, send_telegram
+        from backend.signals.alerter import send_alert
 
-        STRAT_EMOJI = {"long_call": "📈", "long_put": "📉", "long_straddle": "↔️"}
-        CONV_EMOJI  = {"high": "🔥", "medium": "⚡", "low": "💤"}
-        EW_EMOJI    = {"early": "🔵", "optimal": "🟢", "late": "🟠", "avoid": "🔴"}
-        STRAT_NAME  = {"long_call": "Long Call", "long_put": "Long Put", "long_straddle": "Long Straddle"}
+        EW_EMOJI = {"early": "🔵", "optimal": "🟢", "late": "🟠", "avoid": "🔴"}
 
         for idea in ideas:
-            ticker   = idea["ticker"]
-            strategy = idea["strategy"]
-            conv     = idea["conviction"] or "low"
-            em       = idea.get("expected_move")
-            ew       = idea.get("entry_window", "")
-            score    = idea.get("score", 0)
+            ticker = idea["ticker"]
+            em     = idea.get("expected_move")
+            ew     = idea.get("entry_window", "")
+            score  = idea.get("score", 0)
+            cp     = idea.get("call_put_ratio", 1)
 
-            em_str = f"±{em:.1f}%" if em is not None else "N/A"
+            em_str    = f"+{em:.1f}%" if em and cp >= 2 else f"-{em:.1f}%" if em and cp <= 0.7 else f"±{em:.1f}%" if em else "N/A"
+            ew_emoji  = EW_EMOJI.get(ew, "")
 
             tg_text = (
-                f"{STRAT_EMOJI.get(strategy,'📊')} <b>NEW TRADE IDEA — {ticker}</b>\n"
+                f"👀 <b>מניה למעקב — {ticker}</b>\n"
                 f"<i>{idea.get('company','')}</i>\n\n"
-                f"<b>Strategy:</b>  {STRAT_NAME.get(strategy, strategy)}\n"
-                f"<b>Conviction:</b> {CONV_EMOJI.get(conv,'')} {conv.upper()}\n"
-                f"<b>Rationale:</b> {idea.get('rationale','')}\n\n"
-                f"<b>Event:</b>     {idea.get('event_type','FDA')} in {idea.get('days_until','?')}d\n"
-                f"<b>Expiry:</b>    {idea.get('best_expiry','?')}\n"
-                f"<b>Exp Move:</b>  {em_str}\n"
-                f"<b>Entry:</b>     {EW_EMOJI.get(ew,'')} {ew.capitalize()}\n"
-                f"<b>Score:</b>     {score:.1f}/100\n"
+                f"זרימת אופציות חזקה זוהתה לפני אירוע FDA\n\n"
+                f"<b>אירוע:</b>    {idea.get('event_type','FDA')} בעוד {idea.get('days_until','?')} ימים\n"
+                f"<b>תחזית מניה:</b> {em_str}\n"
+                f"<b>חלון כניסה:</b> {ew_emoji} {ew}\n"
+                f"<b>סקור:</b>    {score:.0f}/100\n\n"
+                f"⚠️ המתן לאישור BUY לפני כניסה"
             )
-            if idea.get("contract"):
-                tg_text += f"\n<b>Trade:</b> {idea['contract']}\n"
-            if idea.get("exit"):
-                tg_text += f"<b>Exit:</b>  {idea['exit']}\n"
-
-            plain_msg = f"{STRAT_NAME.get(strategy, strategy)} on {ticker} | score {score:.0f} | {em_str}"
+            plain_msg = f"מניה למעקב: {ticker} | {em_str} | FDA בעוד {idea.get('days_until','?')}d | score {score:.0f}"
             send_alert("trade_idea", ticker, plain_msg, telegram_text=tg_text)
-            logger.info(f"Trade idea alert sent: {strategy} on {ticker}")
+            logger.info(f"Stock watchlist alert sent: {ticker}")
 
     except Exception as e:
         logger.error(f"_notify_new_trade_ideas failed: {e}")
@@ -529,18 +524,10 @@ def run_daily_digest():
         }
         db.close()
 
-        SCORE_EMOJI = {
-            "red":    "🔴",
-            "orange": "🟠",
-            "green":  "🟢",
-        }
-        STRAT_LABEL = {
-            "long_call":     "📈 Long Call",
-            "long_put":      "📉 Long Put",
-            "long_straddle": "↔️ Straddle",
-        }
+        SCORE_EMOJI = {"red": "🔴", "orange": "🟠", "green": "🟢"}
+        SIGNAL_EMOJI = {"BUY": "🟢", "WATCH": "👀", "AVOID": "🔴"}
 
-        lines = ["📅 <b>FDA EVENTS — הבאים 1-2 ימים</b>\n"]
+        lines = ["📅 <b>אירועי FDA — הבאים 1-2 ימים</b>\n"]
         seen = set()
 
         for event in events:
@@ -549,28 +536,34 @@ def run_daily_digest():
             seen.add(event.ticker)
 
             days = (event.event_date - today).days
-            days_str = "מחר" if days == 1 else "היום" if days == 0 else f"בעוד {days} ימים"
+            days_str = "היום" if days == 0 else "מחר" if days == 1 else f"בעוד {days} ימים"
             sig = signals.get(event.ticker)
 
-            score_line = ""
-            strat_line = ""
-            forecast_line = ""
-
             if sig:
-                emoji = SCORE_EMOJI.get(sig.alert_level, "⚪")
-                score_line = f"{emoji} סקור: <b>{sig.composite_score:.0f}/100</b>"
-                strat = sig.recommended_strategy
-                if strat and strat not in ("watch", "avoid"):
-                    strat_line = f"\n   {STRAT_LABEL.get(strat, strat)}"
-                if sig.expected_move_pct:
-                    cp = sig.call_put_ratio or 1
+                score_emoji = SCORE_EMOJI.get(sig.alert_level, "⚪")
+                stock_sig   = getattr(sig, "stock_signal", "WATCH") or "WATCH"
+                sig_emoji   = SIGNAL_EMOJI.get(stock_sig, "👀")
+                entry       = getattr(sig, "entry_price", None)
+                stop        = getattr(sig, "stop_loss_price", None)
+                em          = sig.expected_move_pct
+                cp          = sig.call_put_ratio or 1
+
+                entry_str = f" | כניסה: ${entry:.2f}" if entry else ""
+                stop_str  = f" | סטופ: ${stop:.2f}" if stop else ""
+                if em:
                     direction = "↑" if cp >= 2 else "↓" if cp <= 0.7 else "↕"
-                    forecast_line = f" | {direction} ±{sig.expected_move_pct:.1f}%"
+                    em_str = f" | {direction}{em:.1f}%"
+                else:
+                    em_str = ""
+
+                signal_line = f"   {sig_emoji} <b>{stock_sig}</b>{entry_str}{stop_str}{em_str}\n   {score_emoji} סקור: {sig.composite_score:.0f}/100"
+            else:
+                signal_line = "   ⚪ אין נתוני סיגנל"
 
             lines.append(
                 f"<b>{event.ticker}</b> — {event.company or ''}\n"
                 f"   {event.event_type} | {days_str} ({event.event_date})\n"
-                f"   {score_line}{forecast_line}{strat_line}"
+                f"{signal_line}"
             )
 
         msg = "\n\n".join(lines)
