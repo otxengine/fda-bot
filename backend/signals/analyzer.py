@@ -16,11 +16,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Score weights (must sum to 100)
-WEIGHT_EXPIRATION = 35
-WEIGHT_IV_RANK    = 20
-WEIGHT_CALL_PUT   = 20
-WEIGHT_VOL_OI     = 15
-WEIGHT_PREMIUM    = 10
+WEIGHT_EXPIRATION   = 30
+WEIGHT_IV_RANK      = 17
+WEIGHT_CALL_PUT     = 17
+WEIGHT_VOL_OI       = 13
+WEIGHT_PREMIUM      = 8
+WEIGHT_FUNDAMENTAL  = 15
 
 THRESHOLD_RED    = 70
 THRESHOLD_ORANGE = 50
@@ -65,6 +66,7 @@ def compute_composite_score(
     iv_max: float,
     premium_flow: float,
     expiration_score: float = 0.0,
+    fundamental_score: float = 50.0,
 ) -> dict:
     vol_oi = total_volume / open_interest if open_interest > 0 else 0
 
@@ -79,13 +81,15 @@ def compute_composite_score(
     s_cp     = score_call_put(call_volume, put_volume)
     s_voi    = score_vol_oi(vol_oi)
     s_prem   = score_premium(premium_flow)
+    s_fund   = max(0.0, min(100.0, float(fundamental_score)))
 
     composite = (
-        s_exp  * (WEIGHT_EXPIRATION / 100) +
-        s_iv   * (WEIGHT_IV_RANK    / 100) +
-        s_cp   * (WEIGHT_CALL_PUT   / 100) +
-        s_voi  * (WEIGHT_VOL_OI     / 100) +
-        s_prem * (WEIGHT_PREMIUM    / 100)
+        s_exp  * (WEIGHT_EXPIRATION  / 100) +
+        s_iv   * (WEIGHT_IV_RANK     / 100) +
+        s_cp   * (WEIGHT_CALL_PUT    / 100) +
+        s_voi  * (WEIGHT_VOL_OI      / 100) +
+        s_prem * (WEIGHT_PREMIUM     / 100) +
+        s_fund * (WEIGHT_FUNDAMENTAL / 100)
     )
 
     alert_level = (
@@ -101,18 +105,20 @@ def compute_composite_score(
         "composite_score": round(composite, 1),
         "alert_level":     alert_level,
         "component_scores": {
-            "expiration_score": round(s_exp, 1),
-            "iv_rank_score":    round(s_iv, 1),
-            "call_put_score":   round(s_cp, 1),
-            "vol_oi_score":     round(s_voi, 1),
-            "premium_score":    round(s_prem, 1),
+            "expiration_score":   round(s_exp, 1),
+            "iv_rank_score":      round(s_iv, 1),
+            "call_put_score":     round(s_cp, 1),
+            "vol_oi_score":       round(s_voi, 1),
+            "premium_score":      round(s_prem, 1),
+            "fundamental_score":  round(s_fund, 1),
         },
         "weights": {
-            "expiration": WEIGHT_EXPIRATION,
-            "iv_rank":    WEIGHT_IV_RANK,
-            "call_put":   WEIGHT_CALL_PUT,
-            "vol_oi":     WEIGHT_VOL_OI,
-            "premium":    WEIGHT_PREMIUM,
+            "expiration":  WEIGHT_EXPIRATION,
+            "iv_rank":     WEIGHT_IV_RANK,
+            "call_put":    WEIGHT_CALL_PUT,
+            "vol_oi":      WEIGHT_VOL_OI,
+            "premium":     WEIGHT_PREMIUM,
+            "fundamental": WEIGHT_FUNDAMENTAL,
         },
     }
 
@@ -180,6 +186,14 @@ def analyze_ticker(
         total_oi     = 1
         premium_flow = 0
 
+    # ── Fundamental analysis ──────────────────────────────────────────────────
+    fund_result = {"fundamental_score": 50.0, "fundamental_flags": {}, "fundamental_detail": {}}
+    try:
+        from backend.signals.fundamental_analyzer import analyze_fundamentals
+        fund_result = analyze_fundamentals(ticker, event_type=event_type)
+    except Exception as e:
+        logger.debug(f"Fundamental analysis failed for {ticker}: {e}")
+
     # ── Composite score ───────────────────────────────────────────────────────
     scores = compute_composite_score(
         call_volume=total_call_vol,
@@ -191,6 +205,7 @@ def analyze_ticker(
         iv_max=iv_max,
         premium_flow=premium_flow,
         expiration_score=exp_result["expiration_score"],
+        fundamental_score=fund_result["fundamental_score"],
     )
 
     # ── Probability calibration ───────────────────────────────────────────────
@@ -374,9 +389,15 @@ def analyze_ticker(
         "entry_price":          entry_price_val,
         "stop_loss_price":      stop_loss_price_val,
         "target_date":          target_date_val,
+        # fundamental
+        "fundamental_score":  fund_result["fundamental_score"],
+        "cash_warning":       int(fund_result["fundamental_flags"].get("cash_warning", False)),
+        "squeeze_setup":      int(fund_result["fundamental_flags"].get("squeeze_setup", False)),
+        "analyst_bullish":    int(fund_result["fundamental_flags"].get("analyst_bullish", False)),
         # internal (not stored)
-        "_component_scores": scores["component_scores"],
-        "_weights":          scores["weights"],
-        "_rec_contract":     rec.get("contract"),
-        "_rec_exit":         rec.get("exit"),
+        "_component_scores":  scores["component_scores"],
+        "_weights":           scores["weights"],
+        "_rec_contract":      rec.get("contract"),
+        "_rec_exit":          rec.get("exit"),
+        "_fundamental_detail": fund_result["fundamental_detail"],
     }

@@ -244,6 +244,10 @@ def get_signals(
                 "recommended_strategy": getattr(signal, "recommended_strategy", None),
                 "strategy_rationale":   getattr(signal, "strategy_rationale", None),
                 "strategy_conviction":  getattr(signal, "strategy_conviction", None),
+                "fundamental_score":    getattr(signal, "fundamental_score", None),
+                "cash_warning":         bool(getattr(signal, "cash_warning", 0)),
+                "squeeze_setup":        bool(getattr(signal, "squeeze_setup", 0)),
+                "analyst_bullish":      bool(getattr(signal, "analyst_bullish", 0)),
             }
         else:
             # No signal data yet

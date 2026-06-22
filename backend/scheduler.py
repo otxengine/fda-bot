@@ -556,7 +556,16 @@ def run_daily_digest():
                 else:
                     em_str = ""
 
-                signal_line = f"   {sig_emoji} <b>{stock_sig}</b>{entry_str}{stop_str}{em_str}\n   {score_emoji} סקור: {sig.composite_score:.0f}/100"
+                fund_score = getattr(sig, "fundamental_score", None)
+                fund_str = f" | פונד: {fund_score:.0f}" if fund_score is not None else ""
+
+                fund_flags = []
+                if getattr(sig, "cash_warning", 0):    fund_flags.append("⚠️מזומן נמוך")
+                if getattr(sig, "squeeze_setup", 0):   fund_flags.append("🔥שורט גבוה")
+                if getattr(sig, "analyst_bullish", 0): fund_flags.append("📊אנליסטים חיוביים")
+                flags_str = " " + " ".join(fund_flags) if fund_flags else ""
+
+                signal_line = f"   {sig_emoji} <b>{stock_sig}</b>{entry_str}{stop_str}{em_str}\n   {score_emoji} סקור: {sig.composite_score:.0f}/100{fund_str}{flags_str}"
             else:
                 signal_line = "   ⚪ אין נתוני סיגנל"
 

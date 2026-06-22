@@ -84,6 +84,12 @@ class OptionsSignal(Base):
     stop_loss_price   = Column(Float, nullable=True)    # entry × 0.92
     target_date       = Column(String, nullable=True)   # event_date - 1 day ISO
 
+    # Fundamental analysis
+    fundamental_score = Column(Float, nullable=True)    # 0-100
+    cash_warning      = Column(Integer, default=0)      # <6 months cash
+    squeeze_setup     = Column(Integer, default=0)      # high short interest
+    analyst_bullish   = Column(Integer, default=0)      # analyst consensus buy
+
 
 class AlertLog(Base):
     __tablename__ = "alert_log"
