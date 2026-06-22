@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+apscheduler
+requests
+beautifulsoup4
+yfinance
+python-dotenv
+httpx
+lxml
+pytz
+python-telegram-bot

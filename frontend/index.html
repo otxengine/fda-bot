@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FDA Options Scanner</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --red: #f85149;
+      --orange: #d29922;
+      --green: #3fb950;
+      --red-bg: rgba(248, 81, 73, 0.12);
+      --orange-bg: rgba(210, 153, 34, 0.12);
+      --green-bg: rgba(63, 185, 80, 0.12);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+
+    header .subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+      margin-right: 6px;
+    }
+
+    .status-text {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    #last-updated {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+
+    .btn:hover { background: var(--border); }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover { opacity: 0.85; }
+
+    .toolbar {
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-wrap: wrap;
+    }
+
+    .toolbar label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+
+    .filter-group { display: flex; align-items: center; gap: 6px; }
+
+    .chip {
+      padding: 4px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-muted);
+      transition: all 0.15s;
+    }
+
+    .chip.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(88, 166, 255, 0.1);
+    }
+
+    .spacer { flex: 1; }
+
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      padding: 10px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stat { display: flex; flex-direction: column; }
+    .stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
+    .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+    .main { padding: 20px 24px; }
+
+    .table-wrap {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      max-height: 520px;
+      background: var(--surface);
+    }
+
+    .table-wrap thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--surface2);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead tr {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th:hover { color: var(--text); }
+    th .sort-icon { margin-left: 4px; opacity: 0.5; }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+
+    td { padding: 11px 14px; vertical-align: middle; }
+
+    .ticker-cell {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--accent);
+      font-family: monospace;
+    }
+
+    .company-cell {
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .event-type {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent);
+    }
+
+    .days-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .days-urgent { background: var(--red-bg); color: var(--red); }
+    .days-soon { background: var(--orange-bg); color: var(--orange); }
+    .days-normal { background: var(--green-bg); color: var(--green); }
+
+    .score-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 120px;
+    }
+
+    .score-bar-bg {
+      flex: 1;
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .score-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    .score-num {
+      font-weight: 700;
+      font-size: 14px;
+      min-width: 32px;
+      text-align: right;
+    }
+
+    .alert-red .score-num, .alert-red .score-bar-fill { color: var(--red); background: var(--red); }
+    .alert-orange .score-num, .alert-orange .score-bar-fill { color: var(--orange); background: var(--orange); }
+    .alert-green .score-num, .alert-green .score-bar-fill { color: var(--green); background: var(--green); }
+    .alert-unknown .score-num { color: var(--text-muted); }
+
+    .mono { font-family: monospace; }
+
+    .no-data { color: var(--text-muted); font-size: 12px; }
+
+    .loading {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 12px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    /* Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: min(640px, 95vw);
+      max-height: 85vh;
+      overflow-y: auto;
+    }
+
+    .modal-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .modal-close:hover { background: var(--surface2); color: var(--text); }
+
+    .modal-body { padding: 20px 24px; }
+
+    .modal-section { margin-bottom: 24px; }
+
+    .modal-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .score-big {
+      font-size: 48px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .component-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .component-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .component-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .component-value {
+      font-size: 22px;
+      font-weight: 700;
+      font-family: monospace;
+    }
+
+    .component-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .weight-badge {
+      font-size: 10px;
+      color: var(--accent);
+      background: rgba(88,166,255,0.1);
+      padding: 1px 6px;
+      border-radius: 10px;
+      margin-left: 6px;
+    }
+
+    .data-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .data-item { display: flex; flex-direction: column; gap: 2px; }
+    .data-item .label { font-size: 11px; color: var(--text-muted); }
+    .data-item .value { font-family: monospace; font-size: 13px; }
+
+    .events-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .event-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .event-info { display: flex; flex-direction: column; gap: 3px; }
+    .event-name { font-weight: 600; font-size: 13px; }
+    .event-date-text { font-size: 12px; color: var(--text-muted); }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+    }
+    .tab {
+      padding: 12px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s;
+      user-select: none;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* History table */
+    .change-pos { color: var(--green); font-weight: 700; font-family: monospace; }
+    .change-neg { color: var(--red); font-weight: 700; font-family: monospace; }
+    .change-neu { color: var(--text-muted); font-family: monospace; }
+
+    .outcome-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .outcome-strong_up  { background: var(--green-bg); color: var(--green); }
+    .outcome-up         { background: rgba(63,185,80,0.07); color: var(--green); }
+    .outcome-neutral    { background: var(--surface2); color: var(--text-muted); }
+    .outcome-down       { background: rgba(248,81,73,0.07); color: var(--red); }
+    .outcome-strong_down{ background: var(--red-bg); color: var(--red); }
+    .outcome-unknown    { background: var(--surface2); color: var(--text-muted); }
+
+    .signal-mini {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .signal-mini .dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+
+    /* Probability gauge */
+    .prob-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .prob-label { font-size: 11px; color: var(--text-muted); width: 60px; flex-shrink: 0; }
+    .prob-bar-bg { flex: 1; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+    .prob-bar-fill { height: 100%; border-radius: 4px; }
+    .prob-val { font-size: 12px; font-weight: 700; width: 38px; text-align: right; font-family: monospace; }
+    .prob-up   .prob-bar-fill { background: var(--green); }
+    .prob-up   .prob-val      { color: var(--green); }
+    .prob-down .prob-bar-fill { background: var(--red); }
+    .prob-down .prob-val      { color: var(--red); }
+
+    /* Expiration breakdown table */
+    .exp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .exp-table th { padding: 6px 10px; text-align: left; font-size: 10px;
+                    text-transform: uppercase; color: var(--text-muted);
+                    background: var(--surface2); border-bottom: 1px solid var(--border); }
+    .exp-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
+    .exp-table tr:last-child td { border-bottom: none; }
+    .pinned-row td { background: rgba(88,166,255,0.06); }
+    .weight-badge-sm { font-size: 10px; color: var(--accent); background: rgba(88,166,255,0.1);
+                       padding: 1px 5px; border-radius: 8px; margin-left: 4px; }
+
+    /* Confidence badge */
+    .conf-high   { color: var(--green); }
+    .conf-medium { color: var(--orange); }
+    .conf-low    { color: var(--text-muted); }
+
+    /* Entry window badges */
+    .ew-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .ew-early   { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .ew-optimal { background: var(--green-bg); color: var(--green); }
+    .ew-late    { background: var(--orange-bg); color: var(--orange); }
+    .ew-avoid   { background: var(--red-bg); color: var(--red); }
+
+    /* Strategy badges */
+    .strat-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .strat-long_call    { background: var(--green-bg); color: var(--green); }
+    .strat-long_put     { background: var(--red-bg); color: var(--red); }
+    .strat-long_straddle{ background: var(--orange-bg); color: var(--orange); }
+    .strat-watch        { background: var(--surface2); color: var(--text-muted); }
+
+    /* Warning icons */
+    .warn-icon {
+      font-size: 12px;
+      margin-left: 3px;
+      cursor: help;
+    }
+
+    /* Alert badge on tab */
+    .tab-badge {
+      display: inline-block;
+      background: var(--red);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      border-radius: 10px;
+      padding: 1px 5px;
+      margin-left: 5px;
+      vertical-align: middle;
+      line-height: 1.4;
+    }
+
+    /* Alert notification bar */
+    #alert-bar {
+      display: none;
+      background: rgba(248,81,73,0.12);
+      border-bottom: 1px solid var(--red);
+      padding: 8px 24px;
+      font-size: 13px;
+      color: var(--red);
+      align-items: center;
+      gap: 12px;
+    }
+    #alert-bar.visible { display: flex; }
+
+    /* Trade ideas table */
+    .conviction-high   { color: var(--green); font-weight: 700; }
+    .conviction-medium { color: var(--orange); font-weight: 700; }
+    .conviction-low    { color: var(--text-muted); }
+
+    /* Stock signal badge */
+    .stock-buy   { background: var(--green-bg); color: var(--green); font-weight:700; padding:3px 10px; border-radius:5px; font-size:12px; }
+    .stock-watch { background: var(--surface2); color: var(--text-muted); padding:3px 10px; border-radius:5px; font-size:12px; }
+    .stock-avoid { background: var(--red-bg); color: var(--red); padding:3px 10px; border-radius:5px; font-size:12px; }
+
+    /* Alert list */
+    .alert-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .alert-item.unread { border-left: 3px solid var(--red); }
+    .alert-type-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--red-bg);
+      color: var(--red);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .alert-msg { font-size: 13px; flex: 1; }
+    .alert-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+    /* P-cell in main table */
+    .p-cell  { font-family: monospace; font-weight: 700; font-size: 13px; }
+    .p-high  { color: var(--green); }
+    .p-mid   { color: var(--orange); }
+    .p-low   { color: var(--text-muted); }
+    .p-down  { color: var(--red); }
+
+    /* Pin ratio cell */
+    .pin-wrap { display: flex; align-items: center; gap: 6px; }
+    .pin-bar-bg { width: 40px; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+    .pin-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+
+    /* Event pin badge */
+    .pin-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .pin-badge-high  { background: rgba(88,166,255,0.25); color: var(--accent); border: 1px solid var(--accent); }
+    .pin-badge-med   { background: rgba(88,166,255,0.10); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+    .pin-badge-low   { display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>FDA Options Scanner</h1>
+    <div class="subtitle">Unusual options activity before FDA events</div>
+  </div>
+  <div class="header-right">
+    <span class="status-text">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Loading...</span>
+    </span>
+    <span id="last-updated"></span>
+    <button class="btn" onclick="triggerRefresh()">Refresh Data</button>
+  </div>
+</header>
+
+<div id="alert-bar">
+  <strong>New Alerts</strong>
+  <span id="alert-bar-msg"></span>
+  <button class="btn" style="font-size:11px;padding:3px 10px" onclick="acknowledgeAllAlerts()">Dismiss All</button>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="signals">Upcoming Signals</div>
+  <div class="tab" data-tab="stock-signals">🟢 Stock Signals</div>
+  <div class="tab" data-tab="trade-ideas">Trade Ideas</div>
+  <div class="tab" data-tab="alerts">Alerts <span class="tab-badge" id="alert-count-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="history">Historical Results</div>
+  <div class="tab" data-tab="calibration">Calibration</div>
+</div>
+
+<div class="stats-bar">
+  <div class="stat">
+    <span class="stat-value" id="stat-events">--</span>
+    <span class="stat-label">Upcoming FDA Events</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value" id="stat-signals">--</span>
+    <span class="stat-label">Tickers Tracked</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value" style="color:var(--red)" id="stat-red">--</span>
+    <span class="stat-label">High Signal (>70)</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value" style="color:var(--orange)" id="stat-orange">--</span>
+    <span class="stat-label">Mid Signal (50-70)</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value" id="stat-history">--</span>
+    <span class="stat-label">Historical Records</span>
+  </div>
+</div>
+
+<div class="toolbar">
+  <div class="filter-group">
+    <label>Days Until Event:</label>
+    <span class="chip active" data-days="7">7d</span>
+    <span class="chip" data-days="14">14d</span>
+    <span class="chip" data-days="30">30d</span>
+    <span class="chip" data-days="60">All</span>
+  </div>
+  <div class="filter-group">
+    <label>Min Score:</label>
+    <span class="chip active" data-score="0">All</span>
+    <span class="chip" data-score="50">50+</span>
+    <span class="chip" data-score="70">70+</span>
+  </div>
+  <div class="spacer"></div>
+  <span id="row-count" style="font-size:12px; color:var(--text-muted)"></span>
+</div>
+
+<div class="main">
+
+  <!-- Signals Tab -->
+  <div class="tab-panel active" id="panel-signals">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="ticker">Ticker <span class="sort-icon">↕</span></th>
+            <th data-sort="company">Company</th>
+            <th data-sort="event_type">Event Type</th>
+            <th data-sort="days_until">Days Until <span class="sort-icon">↕</span></th>
+            <th data-sort="signal_score">Score <span class="sort-icon">↓</span></th>
+            <th data-sort="entry_window">Entry</th>
+            <th data-sort="expected_move_pct">Stock Forecast</th>
+            <th data-sort="p_up_5">P(+5%)</th>
+            <th data-sort="p_up_10">P(+10%)</th>
+            <th data-sort="p_down_5">P(−5%)</th>
+            <th data-sort="p_down_10">P(−10%)</th>
+            <th data-sort="event_pinned_ratio">Event Pin</th>
+            <th data-sort="best_expiry">Best Expiry</th>
+            <th data-sort="iv_rank">IV Rank</th>
+            <th data-sort="call_put_ratio">C/P</th>
+            <th data-sort="premium_flow">Premium Flow</th>
+          </tr>
+        </thead>
+        <tbody id="signals-table-body">
+          <tr><td colspan="16" class="loading">
+            <div class="spinner"></div><br>Loading signals...
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Stock Signals Tab -->
+  <div class="tab-panel" id="panel-stock-signals">
+    <div style="margin-bottom:14px;font-size:13px;color:var(--text-muted)">
+      סיגנלים למסחר במניות — חלון 1-5 ימים לפני אירוע FDA | כניסה עכשיו, יציאה יום לפני האירוע
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Company</th>
+            <th>Event</th>
+            <th>Days Until</th>
+            <th>Signal</th>
+            <th>Entry</th>
+            <th>Stop Loss</th>
+            <th>Target Date</th>
+            <th>Stock Forecast</th>
+            <th>Score</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="stock-signals-table-body">
+          <tr><td colspan="11" class="loading"><div class="spinner"></div><br>Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Trade Ideas Tab -->
+  <div class="tab-panel" id="panel-trade-ideas">
+    <div style="margin-bottom:14px; font-size:13px; color:var(--text-muted)">
+      Actionable trade recommendations based on current signal strength, flow, and IV.
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Company</th>
+            <th>Strategy</th>
+            <th>Conviction</th>
+            <th>Contract</th>
+            <th>Stock Forecast</th>
+            <th>Entry</th>
+            <th>Score</th>
+            <th>Days Until</th>
+          </tr>
+        </thead>
+        <tbody id="trade-ideas-table-body">
+          <tr><td colspan="9" class="loading"><div class="spinner"></div><br>Loading trade ideas...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Alerts Tab -->
+  <div class="tab-panel" id="panel-alerts">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="font-size:13px;color:var(--text-muted)">
+        System alerts triggered by score spikes, flow surges, and IV changes.
+      </div>
+      <button class="btn" onclick="acknowledgeAllAlerts()">Dismiss All</button>
+    </div>
+    <div id="alerts-body">
+      <div class="loading"><div class="spinner"></div><br>Loading alerts...</div>
+    </div>
+  </div>
+
+  <!-- Calibration Tab -->
+  <div class="tab-panel" id="panel-calibration">
+    <div style="margin-bottom:14px; font-size:13px; color:var(--text-muted)">
+      Win-rate by signal score bucket — based on historical FDA events in the database.
+    </div>
+    <div id="calibration-body">
+      <div class="loading"><div class="spinner"></div><br>Loading calibration...</div>
+    </div>
+  </div>
+
+  <!-- History Tab -->
+  <div class="tab-panel" id="panel-history">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+      <div style="font-size:13px; color:var(--text-muted)">
+        FDA events from the past 30 days with post-event stock performance
+      </div>
+      <button class="btn" onclick="seedHistory(this)">Seed Historical Data</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Company</th>
+            <th>Event Type</th>
+            <th>Event Date</th>
+            <th>Pre-Event Signal</th>
+            <th>Price Before</th>
+            <th>+1d Change</th>
+            <th>+3d Change</th>
+            <th>+7d Change</th>
+            <th>Outcome</th>
+          </tr>
+        </thead>
+        <tbody id="history-table-body">
+          <tr><td colspan="10" class="loading">
+            <div class="spinner"></div><br>Loading history...
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Ticker Detail Modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-ticker">--</div>
+      <button class="modal-close" onclick="closeModalDirect()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">
+      Loading...
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

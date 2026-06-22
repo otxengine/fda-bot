@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: fda-options-scanner
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: fda-scanner-db
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /data/fda_scanner.db
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SCANNER_API_URL
+        sync: false
