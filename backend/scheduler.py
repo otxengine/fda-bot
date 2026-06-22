@@ -492,6 +492,95 @@ def run_alert_check():
         logger.error(f"Alert check job failed: {e}")
 
 
+def run_daily_digest():
+    """Job: send daily Telegram digest of tickers with FDA events in 1-2 days."""
+    try:
+        from datetime import date, timedelta
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, OptionsSignal
+        from backend.signals.alerter import send_telegram
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        today = date.today()
+        cutoff = today + timedelta(days=2)
+
+        events = db.query(FdaEvent).filter(
+            FdaEvent.event_date >= today,
+            FdaEvent.event_date <= cutoff,
+            FdaEvent.ticker.isnot(None),
+        ).order_by(FdaEvent.event_date).all()
+
+        if not events:
+            db.close()
+            logger.info("Daily digest: no events in next 2 days")
+            return
+
+        # Get latest signal per ticker
+        latest_ids = (
+            db.query(func.max(OptionsSignal.id))
+            .group_by(OptionsSignal.ticker)
+            .all()
+        )
+        signals = {
+            s.ticker: s for s in db.query(OptionsSignal)
+            .filter(OptionsSignal.id.in_([r[0] for r in latest_ids]))
+            .all()
+        }
+        db.close()
+
+        SCORE_EMOJI = {
+            "red":    "🔴",
+            "orange": "🟠",
+            "green":  "🟢",
+        }
+        STRAT_LABEL = {
+            "long_call":     "📈 Long Call",
+            "long_put":      "📉 Long Put",
+            "long_straddle": "↔️ Straddle",
+        }
+
+        lines = ["📅 <b>FDA EVENTS — הבאים 1-2 ימים</b>\n"]
+        seen = set()
+
+        for event in events:
+            if event.ticker in seen:
+                continue
+            seen.add(event.ticker)
+
+            days = (event.event_date - today).days
+            days_str = "מחר" if days == 1 else "היום" if days == 0 else f"בעוד {days} ימים"
+            sig = signals.get(event.ticker)
+
+            score_line = ""
+            strat_line = ""
+            forecast_line = ""
+
+            if sig:
+                emoji = SCORE_EMOJI.get(sig.alert_level, "⚪")
+                score_line = f"{emoji} סקור: <b>{sig.composite_score:.0f}/100</b>"
+                strat = sig.recommended_strategy
+                if strat and strat not in ("watch", "avoid"):
+                    strat_line = f"\n   {STRAT_LABEL.get(strat, strat)}"
+                if sig.expected_move_pct:
+                    cp = sig.call_put_ratio or 1
+                    direction = "↑" if cp >= 2 else "↓" if cp <= 0.7 else "↕"
+                    forecast_line = f" | {direction} ±{sig.expected_move_pct:.1f}%"
+
+            lines.append(
+                f"<b>{event.ticker}</b> — {event.company or ''}\n"
+                f"   {event.event_type} | {days_str} ({event.event_date})\n"
+                f"   {score_line}{forecast_line}{strat_line}"
+            )
+
+        msg = "\n\n".join(lines)
+        send_telegram(msg)
+        logger.info(f"Daily digest sent: {len(seen)} tickers")
+
+    except Exception as e:
+        logger.error(f"Daily digest job failed: {e}")
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Create and configure the APScheduler instance."""
     scheduler = BackgroundScheduler(timezone=EST)
@@ -534,6 +623,15 @@ def create_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(hour=9, minute=0, timezone=EST),
         id="history_update",
         name="Historical Price Update",
+        replace_existing=True,
+    )
+
+    # Daily digest at 8:30 AM EST (before market open)
+    scheduler.add_job(
+        run_daily_digest,
+        trigger=CronTrigger(hour=8, minute=30, timezone=EST),
+        id="daily_digest",
+        name="Daily FDA Digest",
         replace_existing=True,
     )
 
