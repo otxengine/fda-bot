@@ -389,6 +389,15 @@ def get_ticker_detail(symbol: str, db: Session = Depends(get_db)):
                 "earnings_overlap":  bool(getattr(latest_signal, "earnings_overlap", 0)),
                 "flow_velocity":     getattr(latest_signal, "flow_velocity", 0),
             },
+            "fundamental": {
+                "fundamental_score":  getattr(latest_signal, "fundamental_score", None),
+                "clinical_score":     getattr(latest_signal, "clinical_score", None),
+                "cash_warning":       bool(getattr(latest_signal, "cash_warning", 0)),
+                "squeeze_setup":      bool(getattr(latest_signal, "squeeze_setup", 0)),
+                "analyst_bullish":    bool(getattr(latest_signal, "analyst_bullish", 0)),
+                "trial_risk":         bool(getattr(latest_signal, "trial_risk", 0)),
+                "strong_trial":       bool(getattr(latest_signal, "strong_trial", 0)),
+            },
             "raw_data": {
                 "call_volume": latest_signal.call_volume,
                 "put_volume": latest_signal.put_volume,
