@@ -565,6 +565,59 @@ def debug_history(db: Session = Depends(get_db)):
     }
 
 
+@app.post("/api/test-outcome")
+def test_outcome_notification(db: Session = Depends(get_db)):
+    """Inject a demo historical result and send an outcome notification."""
+    from datetime import date, timedelta
+    from backend.models import HistoricalResult, AlertLog
+    from backend.scheduler import _notify_outcome_results
+
+    event_date = date.today() - timedelta(days=2)
+
+    # Remove any existing test record for this ticker/date
+    db.query(HistoricalResult).filter(
+        HistoricalResult.ticker == "DEMO",
+        HistoricalResult.event_date == event_date,
+    ).delete()
+    db.query(AlertLog).filter(
+        AlertLog.ticker == "DEMO",
+        AlertLog.alert_type == "outcome_1d",
+    ).delete()
+
+    db.add(HistoricalResult(
+        ticker="DEMO",
+        company="Demo Biotech Inc.",
+        event_type="PDUFA",
+        drug_name="TestDrug",
+        event_date=event_date,
+        source="test",
+        price_before=18.50,
+        price_1d_after=27.30,
+        change_1d_pct=47.6,
+        outcome="strong_up",
+        pre_event_score=72.0,
+        pre_event_alert_level="orange",
+        pre_event_call_put_ratio=3.8,
+    ))
+    db.commit()
+
+    _notify_outcome_results([{
+        "ticker":       "DEMO",
+        "company":      "Demo Biotech Inc.",
+        "event_type":   "PDUFA",
+        "event_date":   event_date,
+        "pre_signal":   "orange",
+        "pre_score":    72.0,
+        "pre_cp":       3.8,
+        "price_before": 18.50,
+        "price_after":  27.30,
+        "change_1d":    47.6,
+        "outcome":      "strong_up",
+    }])
+
+    return {"status": "ok", "message": "Demo outcome notification sent to Telegram"}
+
+
 @app.post("/api/send-outcomes")
 def send_all_outcomes(db: Session = Depends(get_db)):
     """Send outcome notifications for all historical results that have price data."""
