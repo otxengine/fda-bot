@@ -632,6 +632,25 @@ def debug_db():
     }
 
 
+@app.get("/api/debug-scrape")
+def debug_scrape():
+    """Run each scraper and return event counts + samples."""
+    from backend.scrapers.fda_calendar import scrape_fda_calendar
+    from backend.scrapers.biopharma import scrape_biopharmawatch
+    from backend.scrapers.biopharmcatalyst import scrape_biopharmcatalyst
+    results = {}
+    for name, fn in [("fda_rss", scrape_fda_calendar), ("biopharmawatch", scrape_biopharmawatch), ("biopharmcatalyst", scrape_biopharmcatalyst)]:
+        try:
+            events = fn()
+            results[name] = {
+                "count": len(events),
+                "sample": [{"ticker": e.get("ticker"), "company": e.get("company","")[:30], "date": str(e.get("event_date")), "type": e.get("event_type")} for e in events[:5]],
+            }
+        except Exception as ex:
+            results[name] = {"error": str(ex), "count": 0}
+    return results
+
+
 @app.get("/api/debug-history")
 def debug_history(db: Session = Depends(get_db)):
     """Debug: show raw historical records without date filter."""
