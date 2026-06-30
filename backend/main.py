@@ -519,6 +519,27 @@ def trigger_history_update():
     return {"status": "history update triggered", "message": "Fetching post-event prices and sending outcome alerts..."}
 
 
+@app.get("/api/debug-history")
+def debug_history(db: Session = Depends(get_db)):
+    """Debug: show raw historical records without date filter."""
+    from backend.models import HistoricalResult
+    results = db.query(HistoricalResult).order_by(HistoricalResult.id.desc()).limit(10).all()
+    return {
+        "total_count": db.query(HistoricalResult).count(),
+        "records": [
+            {
+                "id": r.id,
+                "ticker": r.ticker,
+                "event_date": str(r.event_date),
+                "change_1d_pct": r.change_1d_pct,
+                "price_before": r.price_before,
+                "outcome": r.outcome,
+            }
+            for r in results
+        ]
+    }
+
+
 @app.post("/api/send-outcomes")
 def send_all_outcomes(db: Session = Depends(get_db)):
     """Send outcome notifications for all historical results that have price data."""
