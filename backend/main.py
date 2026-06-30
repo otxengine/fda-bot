@@ -501,6 +501,94 @@ def trigger_refresh():
     return {"status": "refresh triggered", "message": "Scraping and scanning in background..."}
 
 
+@app.post("/api/scan-and-alert")
+def scan_and_alert():
+    """Run a full scan and send BUY alerts for ALL tickers that currently meet criteria."""
+    import threading
+
+    def _run():
+        try:
+            from datetime import date, timedelta
+            from backend.database import SessionLocal
+            from backend.models import FdaEvent, OptionsSignal
+            from backend.data.polygon import PolygonClient
+            from backend.data.yfinance_client import YFinanceClient
+            from backend.signals.analyzer import analyze_ticker
+            from backend.scheduler import _notify_stock_buy_signals
+
+            db = SessionLocal()
+            polygon = PolygonClient()
+            yf_client = YFinanceClient()
+
+            today = date.today()
+            cutoff = today + timedelta(days=60)
+            events = db.query(FdaEvent).filter(
+                FdaEvent.event_date >= today,
+                FdaEvent.event_date <= cutoff,
+                FdaEvent.ticker.isnot(None),
+            ).all()
+
+            buy_signals = []
+            for event in events:
+                result = analyze_ticker(
+                    ticker=event.ticker,
+                    polygon_client=polygon,
+                    yfinance_client=yf_client,
+                    event_date=event.event_date,
+                    event_type=event.event_type,
+                    drug_name=event.drug_name,
+                    company=event.company,
+                    db=db,
+                    fda_event_id=event.id,
+                )
+                if not result:
+                    continue
+                signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
+                db.add(signal)
+
+                if result.get("stock_signal") == "BUY":
+                    buy_signals.append({
+                        "ticker":            event.ticker,
+                        "company":           event.company,
+                        "event_type":        event.event_type,
+                        "days_until":        (event.event_date - today).days,
+                        "entry_price":       result.get("entry_price"),
+                        "stop_loss":         result.get("stop_loss_price"),
+                        "target_date":       result.get("target_date"),
+                        "score":             result.get("composite_score"),
+                        "reason":            result.get("stock_signal_reason"),
+                        "expected_move":     result.get("expected_move_pct"),
+                        "call_put_ratio":    result.get("call_put_ratio"),
+                        "fundamental_score": result.get("fundamental_score"),
+                        "clinical_score":    result.get("clinical_score"),
+                        "analyst_bullish":   result.get("analyst_bullish"),
+                        "squeeze_setup":     result.get("squeeze_setup"),
+                    })
+
+            db.commit()
+            db.close()
+
+            if buy_signals:
+                _notify_stock_buy_signals(buy_signals)
+                logger.info(f"scan-and-alert: sent {len(buy_signals)} BUY alerts")
+            else:
+                # Send a summary if nothing qualifies
+                from backend.signals.alerter import send_telegram
+                send_telegram(
+                    f"🔍 <b>סריקה הושלמה</b>\n\n"
+                    f"נסרקו {len(events)} מניות עם אירועי FDA קרובים.\n"
+                    f"<b>אין כרגע מניות שעומדות בקריטריוני הקנייה</b> (score≥50 + flow חיובי בחלון 1-5 ימים).\n\n"
+                    f"הסקורים הנוכחיים נמוכים מהסף או שהאירועים רחוקים מדי."
+                )
+                logger.info("scan-and-alert: no BUY signals found")
+
+        except Exception as e:
+            logger.error(f"scan-and-alert failed: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "scanning", "message": "Full scan running — BUY alerts will be sent to Telegram shortly"}
+
+
 @app.post("/api/digest")
 def trigger_digest():
     """Manually send the daily FDA digest to Telegram."""
