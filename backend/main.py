@@ -520,6 +520,24 @@ def scan_and_alert():
             polygon = PolygonClient()
             yf_client = YFinanceClient()
 
+            # First: refresh the event DB with broad scan
+            from backend.scrapers.broad_biotech import scan_broad_biotech
+            from backend.models import FdaEvent as FdaEventModel
+            broad = scan_broad_biotech(iv_rank_threshold=60, max_tickers=150)
+            for ev in broad:
+                exists = db.query(FdaEventModel).filter(
+                    FdaEventModel.ticker == ev["ticker"],
+                    FdaEventModel.event_date == ev["event_date"],
+                    FdaEventModel.source == "broad_scan/iv",
+                ).first()
+                if not exists:
+                    db.add(FdaEventModel(
+                        ticker=ev["ticker"], company=ev["company"],
+                        event_type=ev["event_type"], event_date=ev["event_date"],
+                        source=ev["source"],
+                    ))
+            db.commit()
+
             today = date.today()
             cutoff = today + timedelta(days=60)
             events = db.query(FdaEvent).filter(
