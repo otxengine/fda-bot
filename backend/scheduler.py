@@ -101,21 +101,18 @@ def run_options_scan(force: bool = False):
         ).all()
 
         scanned = 0
-        new_trade_ideas = []
         new_buy_signals = []
 
         for event in events:
             if not event.ticker:
                 continue
 
-            # Get previous signal to detect new trade ideas
             prev_signal = (
                 db.query(OptionsSignal)
                 .filter(OptionsSignal.ticker == event.ticker)
                 .order_by(OptionsSignal.scan_time.desc())
                 .first()
             )
-            prev_strategy = prev_signal.recommended_strategy if prev_signal else None
 
             result = analyze_ticker(
                 ticker=event.ticker,
@@ -133,52 +130,33 @@ def run_options_scan(force: bool = False):
                 db.add(signal)
                 scanned += 1
 
-                # Detect new BUY stock signals
+                # Send BUY alert when stock_signal becomes BUY (score≥50 + bullish flow)
                 prev_stock_signal = prev_signal.stock_signal if prev_signal else None
                 new_stock_signal = result.get("stock_signal")
                 if new_stock_signal == "BUY" and prev_stock_signal != "BUY":
                     new_buy_signals.append({
-                        "ticker":      event.ticker,
-                        "company":     event.company,
-                        "event_type":  event.event_type,
-                        "days_until":  (event.event_date - today).days,
-                        "entry_price": result.get("entry_price"),
-                        "stop_loss":   result.get("stop_loss_price"),
-                        "target_date": result.get("target_date"),
-                        "score":       result.get("composite_score"),
-                        "reason":      result.get("stock_signal_reason"),
-                        "expected_move": result.get("expected_move_pct"),
-                    })
-
-                # Detect newly actionable trade ideas (watch/None → long_call/put/straddle)
-                new_strat = result.get("recommended_strategy")
-                actionable = {"long_call", "long_put", "long_straddle"}
-                if new_strat in actionable and prev_strategy not in actionable:
-                    new_trade_ideas.append({
-                        "ticker":       event.ticker,
-                        "company":      event.company,
-                        "strategy":     new_strat,
-                        "conviction":   result.get("strategy_conviction"),
-                        "rationale":    result.get("strategy_rationale"),
-                        "expected_move": result.get("expected_move_pct"),
-                        "entry_window": result.get("entry_window"),
-                        "score":        result.get("composite_score"),
-                        "best_expiry":  result.get("best_expiry"),
-                        "days_until":   (event.event_date - today).days,
-                        "event_type":   event.event_type,
-                        "contract":     result.get("_rec_contract"),
-                        "exit":         result.get("_rec_exit"),
+                        "ticker":           event.ticker,
+                        "company":          event.company,
+                        "event_type":       event.event_type,
+                        "days_until":       (event.event_date - today).days,
+                        "entry_price":      result.get("entry_price"),
+                        "stop_loss":        result.get("stop_loss_price"),
+                        "target_date":      result.get("target_date"),
+                        "score":            result.get("composite_score"),
+                        "reason":           result.get("stock_signal_reason"),
+                        "expected_move":    result.get("expected_move_pct"),
+                        "call_put_ratio":   result.get("call_put_ratio"),
+                        "fundamental_score": result.get("fundamental_score"),
+                        "clinical_score":   result.get("clinical_score"),
+                        "analyst_bullish":  result.get("analyst_bullish"),
+                        "squeeze_setup":    result.get("squeeze_setup"),
                     })
 
         db.commit()
         db.close()
         logger.info(f"Options scan complete: {scanned} tickers analyzed")
 
-        # Send Telegram alerts for new trade ideas (options)
-        if new_trade_ideas:
-            _notify_new_trade_ideas(new_trade_ideas)
-
-        # Send Telegram alerts for new BUY stock signals
+        # Send BUY alerts only — no WATCH spam
         if new_buy_signals:
             _notify_stock_buy_signals(new_buy_signals)
 
@@ -192,36 +170,62 @@ def _notify_stock_buy_signals(signals: list):
         from backend.signals.alerter import send_alert
 
         for sig in signals:
-            ticker = sig["ticker"]
-            entry  = sig.get("entry_price")
-            stop   = sig.get("stop_loss")
-            target = sig.get("target_date", "")
-            score  = sig.get("score", 0)
-            em     = sig.get("expected_move")
-            em_str = f"±{em:.1f}%" if em is not None else "N/A"
+            ticker  = sig["ticker"]
+            entry   = sig.get("entry_price")
+            stop    = sig.get("stop_loss")
+            score   = sig.get("score") or 0
+            em      = sig.get("expected_move")
+            cp      = sig.get("call_put_ratio") or 1.0
+            fund    = sig.get("fundamental_score")
+            clinical = sig.get("clinical_score")
+            target_date = sig.get("target_date", "")
 
             entry_str = f"${entry:.2f}" if entry else "market"
             stop_str  = f"${stop:.2f}" if stop else "N/A"
             risk_pct  = f"{((stop-entry)/entry*100):.1f}%" if entry and stop else "-8%"
 
-            entry_val = sig.get("entry_price")
-            target_val = entry_val * (1 + (sig.get("expected_move", 10) or 10) / 100) if entry_val and sig.get("expected_move") else None
+            # Price target based on expected move
+            target_val = entry * (1 + (em or 10) / 100) if entry and em else None
             target_str = f"${target_val:.2f}" if target_val else "N/A"
+
+            # Directional forecast
+            if cp >= 2.0:
+                direction = f"↑ +{em:.1f}%" if em else "↑ עלייה"
+            elif cp <= 0.7:
+                direction = f"↓ -{em:.1f}%" if em else "↓ ירידה"
+            else:
+                direction = f"↕ ±{em:.1f}%" if em else "↕ ניטרלי"
+
+            # Extra flags
+            flags = []
+            if sig.get("analyst_bullish"):  flags.append("📊 אנליסטים חיוביים")
+            if sig.get("squeeze_setup"):    flags.append("🔥 שורט גבוה — squeeze")
+            flags_str = "\n" + " | ".join(flags) if flags else ""
+
+            fund_str = f"{fund:.0f}" if fund is not None else "—"
+            clin_str = f"{clinical:.0f}" if clinical is not None else "—"
 
             tg_text = (
                 f"🟢 <b>קנייה — {ticker}</b>\n"
-                f"<i>{sig.get('company','')}</i>\n\n"
-                f"<b>כניסה:</b>      {entry_str}\n"
-                f"<b>סטופ לוס:</b>   {stop_str} ({risk_pct})\n"
-                f"<b>יעד:</b>        {target_str}\n"
-                f"<b>יציאה לפני:</b> {target} (יום לפני ה-FDA)\n"
-                f"<b>תחזית תנועה:</b> {em_str}\n\n"
+                f"<i>{sig.get('company','')}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<b>כניסה:</b>       {entry_str}\n"
+                f"<b>סטופ לוס:</b>    {stop_str} ({risk_pct})\n"
+                f"<b>יעד מחיר:</b>    {target_str}\n"
+                f"<b>יציאה לפני:</b>  {target_date}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<b>תחזית מניה:</b>  {direction}\n"
+                f"<b>זרימת קול/פוט:</b> {cp:.1f}x\n"
+                f"<b>סקור כולל:</b>   {score:.0f}/100\n"
+                f"<b>פונדמנטל:</b>    {fund_str}/100\n"
+                f"<b>קליני:</b>       {clin_str}/100\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
-                f"<b>סקור:</b> {score:.0f}/100\n"
-                f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
-                f"⚠️ <b>צא לפני</b> ה-FDA — לא להחזיק דרך ההחלטה"
+                f"<b>סיבה:</b> {sig.get('reason','')}"
+                f"{flags_str}\n\n"
+                f"⚠️ <b>צא יום לפני ה-FDA</b> — לא להחזיק דרך ההחלטה"
             )
-            plain = f"BUY {ticker} @ {entry_str} | Stop {stop_str} | FDA in {sig.get('days_until','?')}d"
+            plain = f"BUY {ticker} @ {entry_str} | Stop {stop_str} | {direction} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
             send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
             logger.info(f"Stock BUY alert sent: {ticker}")
 
