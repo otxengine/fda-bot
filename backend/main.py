@@ -510,6 +510,15 @@ def trigger_cleanup():
     return {"status": "cleanup triggered", "message": "Archiving past events to historical results..."}
 
 
+@app.post("/api/history-update")
+def trigger_history_update():
+    """Manually run history price update + send outcome notifications."""
+    import threading
+    from backend.scheduler import run_history_update
+    threading.Thread(target=run_history_update, daemon=True).start()
+    return {"status": "history update triggered", "message": "Fetching post-event prices and sending outcome alerts..."}
+
+
 @app.get("/api/stock-signals")
 def get_stock_signals(db: Session = Depends(get_db)):
     """Return latest BUY stock signals (1-5 day FDA window)."""

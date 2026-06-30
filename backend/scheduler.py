@@ -323,7 +323,7 @@ def run_history_update():
     try:
         from datetime import date, timedelta, datetime
         from backend.database import SessionLocal
-        from backend.models import HistoricalResult
+        from backend.models import HistoricalResult, AlertLog
         from backend.data.history_builder import (
             get_trading_price_on_or_after, pct_change, classify_outcome
         )
@@ -338,9 +338,12 @@ def run_history_update():
         ).all()
 
         updated = 0
+        outcome_notifications = []
+
         for r in results:
             days_since = (today - r.event_date).days
             changed = False
+            just_got_1d = False
 
             if r.price_1d_after is None and days_since >= 1:
                 p = get_trading_price_on_or_after(r.ticker, r.event_date + timedelta(days=1))
@@ -349,6 +352,7 @@ def run_history_update():
                     r.change_1d_pct = pct_change(r.price_before, p)
                     r.outcome = classify_outcome(r.change_1d_pct)
                     changed = True
+                    just_got_1d = True
 
             if r.price_3d_after is None and days_since >= 3:
                 p = get_trading_price_on_or_after(r.ticker, r.event_date + timedelta(days=3))
@@ -368,12 +372,106 @@ def run_history_update():
                 r.updated_at = datetime.utcnow()
                 updated += 1
 
+            # Queue outcome notification when 1d price fills for the first time
+            if just_got_1d:
+                already = db.query(AlertLog).filter(
+                    AlertLog.ticker == r.ticker,
+                    AlertLog.alert_type == "outcome_1d",
+                    AlertLog.message.like(f"%{r.event_date}%"),
+                ).first()
+                if not already:
+                    outcome_notifications.append({
+                        "ticker":       r.ticker,
+                        "company":      r.company,
+                        "event_type":   r.event_type,
+                        "event_date":   r.event_date,
+                        "pre_signal":   r.pre_event_alert_level,
+                        "pre_score":    r.pre_event_score,
+                        "pre_cp":       r.pre_event_call_put_ratio,
+                        "price_before": r.price_before,
+                        "price_after":  r.price_1d_after,
+                        "change_1d":    r.change_1d_pct,
+                        "outcome":      r.outcome,
+                    })
+                    db.add(AlertLog(
+                        ticker=r.ticker,
+                        alert_type="outcome_1d",
+                        score_at_trigger=r.change_1d_pct,
+                        message=f"outcome_1d {r.ticker} {r.event_date} change={r.change_1d_pct:.1f}%",
+                    ))
+
         db.commit()
         db.close()
         logger.info(f"History update: refreshed {updated} records")
 
+        if outcome_notifications:
+            _notify_outcome_results(outcome_notifications)
+
     except Exception as e:
         logger.error(f"History update job failed: {e}")
+
+
+def _notify_outcome_results(outcomes: list):
+    """Send Telegram notification with post-event stock outcome vs pre-event signal."""
+    try:
+        from backend.signals.alerter import send_telegram
+
+        OUTCOME_EMOJI = {
+            "strong_up":   "🚀",
+            "up":          "📈",
+            "neutral":     "➡️",
+            "down":        "📉",
+            "strong_down": "💥",
+        }
+        ALERT_EMOJI = {"red": "🔴", "orange": "🟠", "green": "🟢"}
+
+        for o in outcomes:
+            chg = o.get("change_1d") or 0
+            outcome = o.get("outcome") or "neutral"
+            emoji = OUTCOME_EMOJI.get(outcome, "➡️")
+            sign = "+" if chg >= 0 else ""
+            score = o.get("pre_score")
+            alert_lvl = o.get("pre_signal") or "green"
+            score_emoji = ALERT_EMOJI.get(alert_lvl, "⚪")
+
+            pb = o.get("price_before")
+            pa = o.get("price_after")
+            price_str = f"${pb:.2f} → ${pa:.2f}" if pb and pa else "N/A"
+
+            cp = o.get("pre_cp") or 1
+            if cp >= 2.0:
+                prediction = "↑ עלייה צפויה"
+            elif cp <= 0.7:
+                prediction = "↓ ירידה צפויה"
+            else:
+                prediction = "↕ ניטרלי"
+
+            msg = (
+                f"{emoji} <b>תוצאת איתות — {o['ticker']}</b>\n"
+                f"<i>{o.get('company','')}</i>\n\n"
+                f"<b>אירוע:</b>       {o.get('event_type','FDA')} ({o['event_date']})\n"
+                f"<b>תחזית לפני:</b>  {prediction}\n"
+                f"<b>ציון לפני:</b>   {score_emoji} {score:.0f}/100\n\n"
+                f"<b>מחיר:</b>        {price_str}\n"
+                f"<b>שינוי יומי:</b>  <b>{sign}{chg:.1f}%</b>\n\n"
+            )
+
+            # Was the signal correct?
+            bullish_correct = (cp >= 2.0 and chg > 3)
+            bearish_correct = (cp <= 0.7 and chg < -3)
+            neutral_correct = (abs(cp - 1.0) < 1 and abs(chg) <= 3)
+            if bullish_correct or bearish_correct or neutral_correct:
+                msg += "✅ <b>האיתות היה מדויק</b>"
+            elif (cp >= 2.0 and chg < -3) or (cp <= 0.7 and chg > 3):
+                msg += "❌ <b>האיתות לא היה מדויק</b>"
+            else:
+                msg += "🔘 <b>תוצאה מעורבת</b>"
+
+            send_telegram(msg)
+            logger.info(f"Outcome notification sent: {o['ticker']} {sign}{chg:.1f}%")
+
+    except Exception as e:
+        logger.error(f"_notify_outcome_results failed: {e}")
 
 
 def run_alert_check():
