@@ -501,6 +501,15 @@ def trigger_refresh():
     return {"status": "refresh triggered", "message": "Scraping and scanning in background..."}
 
 
+@app.post("/api/digest")
+def trigger_digest():
+    """Manually send the daily FDA digest to Telegram."""
+    import threading
+    from backend.scheduler import run_daily_digest
+    threading.Thread(target=run_daily_digest, daemon=True).start()
+    return {"status": "digest triggered"}
+
+
 @app.post("/api/cleanup")
 def trigger_cleanup():
     """Manually archive past FDA events to historical results."""
