@@ -519,6 +519,53 @@ def trigger_history_update():
     return {"status": "history update triggered", "message": "Fetching post-event prices and sending outcome alerts..."}
 
 
+@app.post("/api/send-outcomes")
+def send_all_outcomes(db: Session = Depends(get_db)):
+    """Send outcome notifications for all historical results that have price data."""
+    from backend.models import HistoricalResult, AlertLog
+    from backend.scheduler import _notify_outcome_results
+
+    results = db.query(HistoricalResult).filter(
+        HistoricalResult.change_1d_pct.isnot(None),
+    ).order_by(HistoricalResult.event_date.desc()).all()
+
+    to_notify = []
+    for r in results:
+        already = db.query(AlertLog).filter(
+            AlertLog.ticker == r.ticker,
+            AlertLog.alert_type == "outcome_1d",
+            AlertLog.message.like(f"%{r.event_date}%"),
+        ).first()
+        if not already:
+            to_notify.append({
+                "ticker":       r.ticker,
+                "company":      r.company,
+                "event_type":   r.event_type,
+                "event_date":   r.event_date,
+                "pre_signal":   r.pre_event_alert_level,
+                "pre_score":    r.pre_event_score,
+                "pre_cp":       r.pre_event_call_put_ratio,
+                "price_before": r.price_before,
+                "price_after":  r.price_1d_after,
+                "change_1d":    r.change_1d_pct,
+                "outcome":      r.outcome,
+            })
+            db.add(AlertLog(
+                ticker=r.ticker,
+                alert_type="outcome_1d",
+                score_at_trigger=r.change_1d_pct,
+                message=f"outcome_1d {r.ticker} {r.event_date} change={r.change_1d_pct:.1f}%",
+            ))
+
+    db.commit()
+
+    if to_notify:
+        import threading
+        threading.Thread(target=_notify_outcome_results, args=(to_notify,), daemon=True).start()
+
+    return {"status": "ok", "sending": len(to_notify), "already_sent": len(results) - len(to_notify)}
+
+
 @app.get("/api/stock-signals")
 def get_stock_signals(db: Session = Depends(get_db)):
     """Return latest BUY stock signals (1-5 day FDA window)."""
