@@ -519,6 +519,22 @@ def trigger_history_update():
     return {"status": "history update triggered", "message": "Fetching post-event prices and sending outcome alerts..."}
 
 
+@app.get("/api/debug-db")
+def debug_db():
+    """Debug: show DB path and file existence."""
+    import os
+    db_path = os.getenv("DB_PATH", "./fda_scanner.db")
+    abs_path = os.path.abspath(db_path)
+    return {
+        "db_path_env": db_path,
+        "abs_path": abs_path,
+        "file_exists": os.path.exists(abs_path),
+        "file_size_bytes": os.path.getsize(abs_path) if os.path.exists(abs_path) else 0,
+        "data_dir_exists": os.path.isdir("/data"),
+        "data_dir_contents": os.listdir("/data") if os.path.isdir("/data") else [],
+    }
+
+
 @app.get("/api/debug-history")
 def debug_history(db: Session = Depends(get_db)):
     """Debug: show raw historical records without date filter."""
