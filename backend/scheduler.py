@@ -86,108 +86,109 @@ def run_fda_scrape():
 
 def run_realtime_scan(days_window: int = 7):
     """
-    High-frequency focused scan for events within days_window days.
-    Sends BUY alerts immediately. Uses AlertLog (4h cooldown) to prevent spam.
-    Called every 5 min (urgent 0-2d) and every 15 min (focused 0-7d).
+    Unified high-frequency scan using both options-flow AND volume-spike detection.
+    - Stocks with options (price > $3): options-flow analysis
+    - Penny/micro-caps (price < $3, no options): volume-spike analysis
+    Only BUY signals are alerted. AlertLog cooldown: 4h per ticker.
     """
     try:
         from datetime import date, timedelta, datetime
         from backend.database import SessionLocal
-        from backend.models import FdaEvent, OptionsSignal, AlertLog
+        from backend.models import OptionsSignal, AlertLog
         from backend.data.polygon import PolygonClient
         from backend.data.yfinance_client import YFinanceClient
-        from backend.signals.analyzer import analyze_ticker
+        from backend.signals.unified_scanner import scan_all_events
 
         db = SessionLocal()
         today = date.today()
-        cutoff = today + timedelta(days=days_window)
-
-        events = db.query(FdaEvent).filter(
-            FdaEvent.event_date >= today,
-            FdaEvent.event_date <= cutoff,
-            FdaEvent.ticker.isnot(None),
-        ).all()
-
-        if not events:
-            db.close()
-            return
-
-        # Deduplicate tickers (same ticker may have multiple events)
-        seen_tickers = set()
-        unique_events = []
-        for e in sorted(events, key=lambda x: x.event_date):
-            if e.ticker not in seen_tickers:
-                seen_tickers.add(e.ticker)
-                unique_events.append(e)
-
-        logger.info(f"Realtime scan ({days_window}d): {len(unique_events)} tickers...")
-
         polygon = PolygonClient()
         yf_client = YFinanceClient()
-        buy_signals = []
         cooldown_cutoff = datetime.utcnow() - timedelta(hours=4)
 
-        for event in unique_events:
-            # Skip if already alerted in last 4 hours
+        # Unified scan — handles both options and penny paths automatically
+        signals = scan_all_events(
+            db=db,
+            days_window=days_window,
+            polygon_client=polygon,
+            yfinance_client=yf_client,
+        )
+
+        buy_signals = []
+
+        for result in signals:
+            ticker = result.get("ticker")
+            if not ticker:
+                continue
+
+            # Cooldown check
             recent = db.query(AlertLog).filter(
-                AlertLog.ticker == event.ticker,
+                AlertLog.ticker == ticker,
                 AlertLog.alert_type == "stock_buy",
                 AlertLog.triggered_at >= cooldown_cutoff,
             ).first()
             if recent:
                 continue
 
-            result = analyze_ticker(
-                ticker=event.ticker,
-                polygon_client=polygon,
-                yfinance_client=yf_client,
-                event_date=event.event_date,
-                event_type=event.event_type,
-                drug_name=event.drug_name,
-                company=event.company,
-                db=db,
-                fda_event_id=event.id,
+            # Persist signal to DB
+            db_fields = {k: v for k, v in result.items() if not k.startswith("_")}
+            try:
+                signal = OptionsSignal(**db_fields)
+                db.add(signal)
+            except Exception as ex:
+                logger.debug(f"DB write skip {ticker}: {ex}")
+
+            days_until = result.get("_days_until") or (
+                (result.get("target_date") and
+                 (__import__("datetime").date.fromisoformat(result["target_date"]) + timedelta(days=1)
+                  - today).days) or 0
             )
-            if not result:
-                continue
 
-            signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
-            db.add(signal)
+            db.add(AlertLog(
+                ticker=ticker,
+                alert_type="stock_buy",
+                score_at_trigger=result.get("composite_score"),
+                message=(
+                    f"BUY {ticker} score={result.get('composite_score',0):.0f} "
+                    f"path={result.get('_scan_path','?')} "
+                    f"[{days_window}d scan]"
+                ),
+            ))
 
-            days_until = (event.event_date - today).days
-            if result.get("stock_signal") == "BUY" and 0 <= days_until <= days_window:
-                db.add(AlertLog(
-                    ticker=event.ticker,
-                    alert_type="stock_buy",
-                    score_at_trigger=result.get("composite_score"),
-                    message=f"BUY {event.ticker} score={result.get('composite_score'):.0f} event={event.event_date} [{days_window}d scan]",
-                ))
-                buy_signals.append({
-                    "ticker":            event.ticker,
-                    "company":           event.company,
-                    "event_type":        event.event_type,
-                    "days_until":        days_until,
-                    "entry_price":       result.get("entry_price"),
-                    "stop_loss":         result.get("stop_loss_price"),
-                    "target_date":       result.get("target_date"),
-                    "score":             result.get("composite_score"),
-                    "reason":            result.get("stock_signal_reason"),
-                    "expected_move":     result.get("expected_move_pct"),
-                    "call_put_ratio":    result.get("call_put_ratio"),
-                    "fundamental_score": result.get("fundamental_score"),
-                    "clinical_score":    result.get("clinical_score"),
-                    "analyst_bullish":   result.get("analyst_bullish"),
-                    "squeeze_setup":     result.get("squeeze_setup"),
-                })
+            scan_path = result.get("_scan_path", "options")
+            buy_signals.append({
+                "ticker":            ticker,
+                "company":           result.get("company") or result.get("ticker"),
+                "event_type":        result.get("event_type") or "FDA Event",
+                "days_until":        days_until,
+                "entry_price":       result.get("entry_price"),
+                "stop_loss":         result.get("stop_loss_price"),
+                "target_date":       result.get("target_date"),
+                "score":             result.get("composite_score", 0),
+                "reason":            result.get("stock_signal_reason"),
+                "expected_move":     result.get("expected_move_pct"),
+                "call_put_ratio":    result.get("call_put_ratio"),
+                "fundamental_score": result.get("fundamental_score"),
+                "clinical_score":    result.get("clinical_score"),
+                "analyst_bullish":   result.get("analyst_bullish"),
+                "squeeze_setup":     result.get("squeeze_setup"),
+                "binary_event_risk": result.get("binary_event_risk", 0),
+                # Penny-specific extras
+                "_scan_path":        scan_path,
+                "_volume_spike":     result.get("_volume_spike"),
+                "_momentum_3d":      result.get("_momentum_3d"),
+                "_short_pct":        result.get("_short_pct"),
+                "_risk_level":       result.get("_risk_level"),
+                "_position_advice":  result.get("_position_advice"),
+            })
 
         db.commit()
         db.close()
 
         if buy_signals:
             _notify_stock_buy_signals(buy_signals)
-            logger.info(f"Realtime scan ({days_window}d): {len(buy_signals)} BUY alerts sent")
+            logger.info(f"Unified scan ({days_window}d): {len(buy_signals)} BUY alerts sent")
         else:
-            logger.debug(f"Realtime scan ({days_window}d): no new BUY signals")
+            logger.debug(f"Unified scan ({days_window}d): no new BUY signals")
 
     except Exception as e:
         logger.error(f"Realtime scan ({days_window}d) failed: {e}")
@@ -301,7 +302,7 @@ def run_options_scan(force: bool = False):
 
 
 def _notify_stock_buy_signals(signals: list):
-    """Send Telegram BUY signal alert for stock trades."""
+    """Send Telegram BUY signal alert. Handles both options-flow and penny/volume-spike paths."""
     try:
         from backend.signals.alerter import send_alert
 
@@ -310,60 +311,93 @@ def _notify_stock_buy_signals(signals: list):
             entry   = sig.get("entry_price")
             stop    = sig.get("stop_loss")
             score   = sig.get("score") or 0
-            em      = sig.get("expected_move")
-            cp      = sig.get("call_put_ratio") or 1.0
-            fund    = sig.get("fundamental_score")
-            clinical = sig.get("clinical_score")
             target_date = sig.get("target_date", "")
+            scan_path = sig.get("_scan_path", "options")
 
-            entry_str = f"${entry:.2f}" if entry else "market"
-            stop_str  = f"${stop:.2f}" if stop else "N/A"
-            risk_pct  = f"{((stop-entry)/entry*100):.1f}%" if entry and stop else "-8%"
+            entry_str = f"${entry:.4f}" if entry and entry < 1 else (f"${entry:.2f}" if entry else "market")
+            stop_str  = f"${stop:.4f}" if stop and stop < 1 else (f"${stop:.2f}" if stop else "N/A")
+            risk_pct  = f"{((stop-entry)/entry*100):.1f}%" if entry and stop else "—"
 
-            # Price target based on expected move
-            target_val = entry * (1 + (em or 10) / 100) if entry and em else None
-            target_str = f"${target_val:.2f}" if target_val else "N/A"
+            if scan_path == "penny":
+                # ── Penny / volume-spike path ─────────────────────────────────
+                spike   = sig.get("_volume_spike") or 0
+                mom     = sig.get("_momentum_3d") or 0
+                short   = sig.get("_short_pct") or 0
+                risk    = sig.get("_risk_level", "HIGH")
+                advice  = sig.get("_position_advice", "גודל פוזיציה קטן בלבד (0.5%)")
+                risk_emoji = "🔥" if risk == "HIGH" else "⚠️"
+                mom_str = f"+{mom:.1f}%" if mom >= 0 else f"{mom:.1f}%"
+                short_line = f"<b>שורט:</b>        {short:.0f}% 🔥\n" if short >= 20 else ""
 
-            # Directional forecast
-            if cp >= 2.0:
-                direction = f"↑ +{em:.1f}%" if em else "↑ עלייה"
-            elif cp <= 0.7:
-                direction = f"↓ -{em:.1f}%" if em else "↓ ירידה"
+                tg_text = (
+                    f"🟢 <b>קנייה — {ticker}</b>\n"
+                    f"<i>{sig.get('company','')}</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>כניסה:</b>       {entry_str}\n"
+                    f"<b>סטופ לוס:</b>    {stop_str} ({risk_pct})\n"
+                    f"<b>יציאה לפני:</b>  {target_date}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>נפח יומי:</b>    ×{spike:.1f} מעל ממוצע\n"
+                    f"<b>מומנטום 3י׳:</b>  {mom_str}\n"
+                    f"{short_line}"
+                    f"<b>ציון:</b>        {score:.0f}/100\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
+                    f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
+                    f"{risk_emoji} <b>סיכון {risk}</b> — {advice}\n"
+                    f"⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>\n"
+                    f"🚪 <b>צא יום לפני ה-FDA</b>"
+                )
+                plain = f"BUY {ticker} @ {entry_str} vol×{spike:.1f} mom{mom_str} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
+
             else:
-                direction = f"↕ ±{em:.1f}%" if em else "↕ ניטרלי"
+                # ── Options-flow path ─────────────────────────────────────────
+                em   = sig.get("expected_move")
+                cp   = sig.get("call_put_ratio") or 1.0
+                fund = sig.get("fundamental_score")
+                clinical = sig.get("clinical_score")
 
-            # Extra flags
-            flags = []
-            if sig.get("analyst_bullish"):  flags.append("📊 אנליסטים חיוביים")
-            if sig.get("squeeze_setup"):    flags.append("🔥 שורט גבוה — squeeze")
-            flags_str = "\n" + " | ".join(flags) if flags else ""
+                target_val = entry * (1 + (em or 10) / 100) if entry and em else None
+                target_str = f"${target_val:.2f}" if target_val else "N/A"
 
-            fund_str = f"{fund:.0f}" if fund is not None else "—"
-            clin_str = f"{clinical:.0f}" if clinical is not None else "—"
+                direction = (
+                    (f"↑ +{em:.1f}%" if em else "↑ עלייה") if cp >= 2.0 else
+                    (f"↕ ±{em:.1f}%" if em else "↕ ניטרלי")
+                )
 
-            tg_text = (
-                f"🟢 <b>קנייה — {ticker}</b>\n"
-                f"<i>{sig.get('company','')}</i>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>כניסה:</b>       {entry_str}\n"
-                f"<b>סטופ לוס:</b>    {stop_str} ({risk_pct})\n"
-                f"<b>יעד מחיר:</b>    {target_str}\n"
-                f"<b>יציאה לפני:</b>  {target_date}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>תחזית מניה:</b>  {direction}\n"
-                f"<b>זרימת קול/פוט:</b> {cp:.1f}x\n"
-                f"<b>סקור כולל:</b>   {score:.0f}/100\n"
-                f"<b>פונדמנטל:</b>    {fund_str}/100\n"
-                f"<b>קליני:</b>       {clin_str}/100\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
-                f"<b>סיבה:</b> {sig.get('reason','')}"
-                f"{flags_str}\n\n"
-                f"⚠️ <b>צא יום לפני ה-FDA</b> — לא להחזיק דרך ההחלטה"
-            )
-            plain = f"BUY {ticker} @ {entry_str} | Stop {stop_str} | {direction} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
+                flags = []
+                if sig.get("analyst_bullish"): flags.append("📊 אנליסטים חיוביים")
+                if sig.get("squeeze_setup"):   flags.append("🔥 שורט גבוה — squeeze")
+                if sig.get("binary_event_risk"): flags.append("⚠️ binary risk")
+                flags_str = "\n" + " | ".join(flags) if flags else ""
+
+                fund_str = f"{fund:.0f}" if fund is not None else "—"
+                clin_str = f"{clinical:.0f}" if clinical is not None else "—"
+
+                tg_text = (
+                    f"🟢 <b>קנייה — {ticker}</b>\n"
+                    f"<i>{sig.get('company','')}</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>כניסה:</b>       {entry_str}\n"
+                    f"<b>סטופ לוס:</b>    {stop_str} ({risk_pct})\n"
+                    f"<b>יעד מחיר:</b>    {target_str}\n"
+                    f"<b>יציאה לפני:</b>  {target_date}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>תחזית מניה:</b>  {direction}\n"
+                    f"<b>זרימת קול/פוט:</b> {cp:.1f}x\n"
+                    f"<b>ציון כולל:</b>   {score:.0f}/100\n"
+                    f"<b>פונדמנטל:</b>    {fund_str}/100\n"
+                    f"<b>קליני:</b>       {clin_str}/100\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
+                    f"<b>סיבה:</b> {sig.get('reason','')}"
+                    f"{flags_str}\n\n"
+                    f"⚠️ <b>צא יום לפני ה-FDA</b> — לא להחזיק דרך ההחלטה"
+                )
+                plain = f"BUY {ticker} @ {entry_str} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
+
             send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
-            logger.info(f"Stock BUY alert sent: {ticker}")
+            logger.info(f"BUY alert [{scan_path}]: {ticker} score={score:.0f}")
 
     except Exception as e:
         logger.error(f"_notify_stock_buy_signals failed: {e}")
@@ -727,6 +761,200 @@ def run_alert_check():
         logger.error(f"Alert check job failed: {e}")
 
 
+def run_penny_scan():
+    """
+    Job: scan FDA event tickers that are penny/micro-cap stocks (price < $5, no options).
+    Uses volume spike + momentum + short squeeze instead of options flow.
+    Runs twice daily (pre-market 8:00 AM + mid-day 12:30 PM EST, Mon-Fri).
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.models import AlertLog
+        from backend.scrapers.penny_catalyst_scanner import scan_all_penny_catalysts
+        from datetime import datetime, timedelta
+
+        db = SessionLocal()
+        signals = scan_all_penny_catalysts(db)
+
+        if not signals:
+            db.close()
+            logger.debug("Penny scan: no BUY signals found")
+            return
+
+        cooldown_cutoff = datetime.utcnow() - timedelta(hours=6)
+        new_alerts = []
+
+        for sig in signals:
+            ticker = sig["ticker"]
+            # Cooldown: same ticker once per 6h
+            recent = db.query(AlertLog).filter(
+                AlertLog.ticker == ticker,
+                AlertLog.alert_type == "penny_catalyst",
+                AlertLog.triggered_at >= cooldown_cutoff,
+            ).first()
+            if recent:
+                continue
+
+            db.add(AlertLog(
+                ticker=ticker,
+                alert_type="penny_catalyst",
+                score_at_trigger=sig.get("composite_score"),
+                message=(
+                    f"penny BUY {ticker} score={sig.get('composite_score'):.0f} "
+                    f"vol_spike={sig.get('volume_spike'):.1f}x "
+                    f"mom={sig.get('momentum_3d_pct'):.1f}% "
+                    f"event={sig.get('event_date')}"
+                ),
+            ))
+            new_alerts.append(sig)
+
+        db.commit()
+        db.close()
+
+        if new_alerts:
+            _notify_penny_signals(new_alerts)
+            logger.info(f"Penny scan: {len(new_alerts)} BUY alerts sent")
+
+    except Exception as e:
+        logger.error(f"Penny scan job failed: {e}")
+
+
+def _notify_penny_signals(signals: list):
+    """Send Telegram BUY alert for penny/micro-cap catalyst stocks."""
+    try:
+        from backend.signals.alerter import send_alert
+
+        for sig in signals:
+            ticker  = sig["ticker"]
+            price   = sig.get("price", 0)
+            score   = sig.get("composite_score", 0)
+            spike   = sig.get("volume_spike", 0)
+            mom     = sig.get("momentum_3d_pct", 0)
+            short   = sig.get("short_pct", 0)
+            days    = sig.get("days_until", "?")
+            risk    = sig.get("risk_level", "HIGH")
+            advice  = sig.get("position_advice", "גודל פוזיציה קטן בלבד")
+            news_n  = sig.get("news_count_3d", 0)
+            event_dt = sig.get("event_date", "")
+
+            risk_emoji = "🔥" if risk == "HIGH" else "⚠️"
+            mom_str = f"+{mom:.1f}%" if mom >= 0 else f"{mom:.1f}%"
+            news_str = f" | {news_n} ידיעות" if news_n > 0 else ""
+            short_str = f" | שורט {short:.0f}% 🔥" if short >= 20 else ""
+
+            tg_text = (
+                f"🟢 <b>קנייה: מיקרו-קאפ — {ticker}</b>\n"
+                f"<i>{sig.get('company','')}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<b>מחיר:</b>        ${price:.4f}\n"
+                f"<b>נפח יומי:</b>    ×{spike:.1f} מעל ממוצע\n"
+                f"<b>מומנטום 3י׳:</b>  {mom_str}{news_str}\n"
+                f"{f'<b>שורט:</b>        {short:.0f}%{short_str}{chr(10)}' if short >= 10 else ''}"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<b>אירוע FDA:</b>   {sig.get('event_type','FDA')} ({event_dt})\n"
+                f"<b>ימים לאירוע:</b> {days}\n"
+                f"<b>ציון:</b>        {score:.0f}/100\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
+                f"{risk_emoji} <b>סיכון {risk}</b> — {advice}\n"
+                f"⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>\n"
+                f"🚪 <b>יציאה: יום לפני האירוע — לא להחזיק דרך ה-FDA</b>"
+            )
+            plain = (
+                f"PENNY BUY {ticker} ${price:.4f} | vol×{spike:.1f} | "
+                f"mom{mom_str} | FDA in {days}d | score {score:.0f}"
+            )
+            send_alert("penny_catalyst", ticker, plain, telegram_text=tg_text)
+            logger.info(f"Penny BUY alert: {ticker} ${price:.4f} vol×{spike:.1f} score={score:.0f}")
+
+    except Exception as e:
+        logger.error(f"_notify_penny_signals failed: {e}")
+
+
+def run_edgar_scan():
+    """
+    Job: scan EDGAR for recent 8-K FDA filings (every 6h, 24/7).
+    Catches micro-cap biotechs that have NO options but can still move 30-100%.
+    Sends Telegram alert for positive/neutral filings only (negative = separate alert).
+    """
+    try:
+        from backend.scrapers.edgar_scanner import scan_edgar_fda_filings
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, AlertLog
+        from backend.signals.alerter import send_telegram
+        from datetime import datetime, timedelta
+
+        filings = scan_edgar_fda_filings(lookback_days=1, max_results=30)
+        if not filings:
+            logger.debug("EDGAR scan: no new FDA filings in last 24h")
+            return
+
+        db = SessionLocal()
+        cooldown_cutoff = datetime.utcnow() - timedelta(hours=12)
+        new_alerts = []
+
+        for f in filings:
+            ticker  = f.get("ticker")
+            company = f.get("company") or ""
+            sentiment = f.get("_sentiment", "neutral")
+
+            # Skip negative filings — bad news, not a BUY setup
+            if sentiment == "negative":
+                logger.info(f"EDGAR negative: {company} ({ticker}) — skipping alert")
+                continue
+
+            # Alert cooldown — don't spam same company
+            alert_key = ticker or company[:20]
+            recent = db.query(AlertLog).filter(
+                AlertLog.ticker == alert_key,
+                AlertLog.alert_type == "edgar_filing",
+                AlertLog.triggered_at >= cooldown_cutoff,
+            ).first()
+            if recent:
+                continue
+
+            # Add to FdaEvent DB if ticker known and not already present
+            if ticker:
+                existing = db.query(FdaEvent).filter(
+                    FdaEvent.ticker == ticker,
+                    FdaEvent.event_date == f["event_date"],
+                    FdaEvent.source == "edgar/8-K",
+                ).first()
+                if not existing:
+                    db.add(FdaEvent(
+                        ticker=ticker,
+                        company=company,
+                        event_type="FDA Filing (8-K)",
+                        event_date=f["event_date"],
+                        source="edgar/8-K",
+                    ))
+
+            db.add(AlertLog(
+                ticker=alert_key,
+                alert_type="edgar_filing",
+                score_at_trigger=None,
+                message=f"edgar 8-K: {company} {f['event_date']} sentiment={sentiment}",
+            ))
+            new_alerts.append(f)
+
+        db.commit()
+        db.close()
+
+        if new_alerts:
+            # Send one batched Telegram message
+            lines = ["📄 <b>הגשות 8-K חדשות ל-SEC — FDA</b>\n"]
+            for f in new_alerts[:10]:
+                t = f.get("ticker") or "—"
+                s = {"positive": "🟢", "neutral": "⚪"}.get(f.get("_sentiment", "neutral"), "⚪")
+                lines.append(f"{s} <b>{t}</b> — {f.get('company','')}\n   {f.get('event_type','')} ({f.get('event_date','')})")
+            msg = "\n\n".join(lines) + "\n\n⚠️ <i>מניות אלו ייתכן שאין להן אופציות — בדוק לפני כניסה</i>"
+            send_telegram(msg)
+            logger.info(f"EDGAR scan: {len(new_alerts)} new FDA 8-K filings alerted")
+
+    except Exception as e:
+        logger.error(f"EDGAR scan job failed: {e}")
+
+
 def run_learning_update():
     """
     Job: analyze historical outcomes with Claude and update learned weights.
@@ -973,6 +1201,34 @@ def create_scheduler() -> BackgroundScheduler:
         id="nightly_cleanup",
         name="Nightly Cleanup (2:00 EST)",
         replace_existing=True,
+    )
+
+    # ── PENNY CATALYST SCAN: 8:00 AM + 12:30 PM EST Mon-Fri ─────────────────
+    # Volume-spike based detection for stocks < $5 with FDA events
+    scheduler.add_job(
+        run_penny_scan,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="8,12",
+            minute="0,30",
+            timezone=EST,
+        ),
+        id="penny_scan",
+        name="Penny Catalyst Scan (2x daily)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── EDGAR 8-K SCAN: every 6h, 24/7 (catches micro-caps without options) ───
+    scheduler.add_job(
+        run_edgar_scan,
+        trigger=IntervalTrigger(hours=6),
+        id="edgar_scan",
+        name="EDGAR 8-K FDA Scan (6h, 24/7)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # ── LEARNING UPDATE: Mon-Fri 9:05 AM EST (after history update) ──────────

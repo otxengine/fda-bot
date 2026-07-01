@@ -78,11 +78,12 @@ class OptionsSignal(Base):
     strategy_conviction  = Column(String, nullable=True)  # high/medium/low
 
     # Stock signal (for stock trading, not options)
-    stock_signal      = Column(String, nullable=True)   # BUY / WATCH / AVOID
+    stock_signal      = Column(String, nullable=True)   # BUY / WATCH / AVOID / BEARISH
     stock_signal_reason = Column(String, nullable=True)
     entry_price       = Column(Float, nullable=True)
     stop_loss_price   = Column(Float, nullable=True)    # entry × 0.92
     target_date       = Column(String, nullable=True)   # event_date - 1 day ISO
+    binary_event_risk = Column(Integer, default=0)      # small-cap + event ≤3d ahead
 
     # Fundamental analysis
     fundamental_score = Column(Float, nullable=True)    # 0-100

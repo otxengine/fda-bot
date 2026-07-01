@@ -1020,6 +1020,98 @@ def get_learning_insights(db: Session = Depends(get_db)):
     return {"insights": result, "count": len(result)}
 
 
+@app.get("/api/test-detection")
+def test_detection(
+    tickers: str = "HOTH,ADTX,ABVX,VTGN,UNCY",
+    days_back: int = 2,
+    db: Session = Depends(get_db),
+):
+    """
+    Simulate the unified scanner running N days ago and check if it would have caught these tickers.
+    Usage: /api/test-detection?tickers=HOTH,ADTX,ABVX&days_back=2
+    """
+    import yfinance as yf
+    from backend.scrapers.penny_catalyst_scanner import (
+        _volume_score, _momentum_score, _proximity_score,
+    )
+
+    results = []
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+
+    for ticker in ticker_list:
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            mktcap = info.get("marketCap") or 0
+            expirations = t.options or []
+
+            check_date = date.today() - timedelta(days=days_back)
+            hist = t.history(
+                start=check_date - timedelta(days=25),
+                end=check_date + timedelta(days=1),
+            )
+
+            if hist.empty or len(hist) < 3:
+                results.append({"ticker": ticker, "status": "no_history"})
+                continue
+
+            today_vol = hist["Volume"].iloc[-1]
+            avg_vol   = hist["Volume"].iloc[:-1].tail(20).mean()
+            spike     = round(today_vol / avg_vol, 2) if avg_vol > 0 else 0
+
+            price_now  = float(hist["Close"].iloc[-1])
+            price_3ago = float(hist["Close"].iloc[-4]) if len(hist) >= 4 else float(hist["Close"].iloc[0])
+            mom = round(((price_now - price_3ago) / price_3ago * 100), 2) if price_3ago > 0 else 0
+
+            path = "options" if (expirations and price >= 3.0 and mktcap >= 10_000_000) else "penny"
+
+            # Score
+            s_vol  = _volume_score(spike)
+            s_mom  = _momentum_score(mom)
+            s_prox = _proximity_score(days_back)
+            penny_score = round(s_vol * 0.40 + s_mom * 0.25 + s_prox * 0.15, 1)
+
+            cp_ratio = None
+            if path == "options" and expirations:
+                try:
+                    chain = t.option_chain(expirations[0])
+                    cv = chain.calls["volume"].sum()
+                    pv = chain.puts["volume"].sum()
+                    cp_ratio = round(cv / pv, 2) if pv > 0 else (2.0 if cv > 0 else 1.0)
+                except Exception:
+                    pass
+
+            would_catch = (
+                (path == "penny" and spike >= 2.0 and penny_score >= 45) or
+                (path == "options" and cp_ratio and cp_ratio >= 1.8 and spike >= 1.5)
+            )
+
+            results.append({
+                "ticker":       ticker,
+                "price":        round(price, 4),
+                "market_cap_m": round(mktcap / 1e6, 1),
+                "path":         path,
+                "options_count": len(expirations),
+                "volume_spike": spike,
+                "momentum_3d":  mom,
+                "penny_score":  penny_score,
+                "cp_ratio":     cp_ratio,
+                "would_catch":  would_catch,
+                "checked_date": check_date.isoformat(),
+            })
+
+        except Exception as e:
+            results.append({"ticker": ticker, "status": "error", "detail": str(e)})
+
+    caught = sum(1 for r in results if r.get("would_catch"))
+    return {
+        "summary": f"{caught}/{len(results)} would have been caught {days_back}d before",
+        "days_back": days_back,
+        "results": results,
+    }
+
+
 @app.get("/api/status")
 def get_status(db: Session = Depends(get_db)):
     """System status, scan schedule, and stats."""

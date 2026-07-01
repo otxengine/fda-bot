@@ -159,8 +159,11 @@ def analyze_ticker(
     stock_price = stock_info.get("price", 0)
     market_cap  = stock_info.get("market_cap", 0)
 
-    if market_cap and market_cap < 50_000_000:
-        logger.info(f"Skipping {ticker}: market cap ${market_cap:,.0f} < $50M")
+    # Use a lower cap threshold when we already have a known FDA event in the DB
+    # (tiny company with a real PDUFA date can still move 50%+ even at $10M market cap)
+    cap_threshold = 10_000_000 if fda_event_id else 50_000_000
+    if market_cap and market_cap < cap_threshold:
+        logger.info(f"Skipping {ticker}: market cap ${market_cap:,.0f} < ${cap_threshold/1e6:.0f}M")
         return None
 
     # ── IV history ────────────────────────────────────────────────────────────
@@ -341,17 +344,38 @@ def analyze_ticker(
     stop_loss_price_val = round(stock_price * 0.92, 2) if stock_price else None
     target_date_val = (event_date - timedelta(days=1)).isoformat() if event_date else None
 
+    # ── Binary event risk: market_cap < $100M with event in 0-3 days ─────────
+    # These stocks have massive asymmetric moves but direction is unknowable.
+    # Flag them regardless of call/put ratio so the user can size appropriately.
+    binary_event_risk = bool(
+        market_cap and market_cap < 100_000_000
+        and event_date and 0 <= days_until <= 3
+    )
+
     if 0 <= days_until <= 7:
+        score_val = scores["composite_score"]
+        cp_val    = scores["call_put_ratio"]
+        fv_val    = flow_velocity
+        fund_val  = fund_result["fundamental_score"]
+
         score_val = scores["composite_score"]
         cp_val    = scores["call_put_ratio"]
         fv_val    = flow_velocity
 
         # High C/P override: exceptional call flow overrides score threshold
         high_cp_override = cp_val >= 5.0 and score_val >= 40
-        # Standard BUY: score≥50 + bullish flow (lowered from 55 — Polygon 403 depresses scores)
+        # Standard BUY: score≥50 + bullish flow
         standard_buy = score_val >= 50 and cp_val >= 1.8
+        # Penny stock: price < $0.50 — options flow is unreliable, handled by penny scanner
+        penny_stock = bool(stock_price and stock_price < 0.50)
 
-        if (standard_buy or high_cp_override) and not liquidity_warning:
+        if penny_stock:
+            stock_signal = "WATCH"
+            stock_signal_reason = f"penny stock (${stock_price:.4f}) — requires volume-based scan"
+            entry_price_val = None
+            stop_loss_price_val = None
+
+        elif (standard_buy or high_cp_override) and not liquidity_warning:
             stock_signal = "BUY"
             reasons = []
             if high_cp_override and not standard_buy:
@@ -366,10 +390,11 @@ def analyze_ticker(
                 reasons.append(f"rising premium (+{fv_val:.0f}%)")
             if exp_result["event_pinned_ratio"] > 0.5:
                 reasons.append("event-pinned options")
+            if binary_event_risk:
+                reasons.append("⚠️ binary event risk — size small")
             stock_signal_reason = " | ".join(reasons)
 
         elif (standard_buy or high_cp_override) and liquidity_warning:
-            # Good signal but thin market — downgrade to WATCH with caution note
             stock_signal = "WATCH"
             stock_signal_reason = f"signal ok (score {score_val:.0f}, C/P {cp_val:.1f}) — low liquidity, size small"
 
@@ -390,6 +415,7 @@ def analyze_ticker(
         stock_signal_reason = f"monitoring — {days_until}d until event (enter at 0-7d)"
         entry_price_val = None
         stop_loss_price_val = None
+        binary_event_risk = False
 
     # ── B1: Trade recommendation ──────────────────────────────────────────────
     signal_snapshot = {
@@ -455,6 +481,7 @@ def analyze_ticker(
         "entry_price":          entry_price_val,
         "stop_loss_price":      stop_loss_price_val,
         "target_date":          target_date_val,
+        "binary_event_risk":    int(binary_event_risk),
         # fundamental
         "fundamental_score":  fund_result["fundamental_score"],
         "cash_warning":       int(fund_result["fundamental_flags"].get("cash_warning", False)),

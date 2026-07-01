@@ -15,9 +15,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Biotech universe (XBI + IBB top components) ────────────────────────────────
+# ── Biotech universe (XBI + IBB components + small/mid-cap FDA catalysts) ──────
 BIOTECH_UNIVERSE = [
-    # Large / mid cap
+    # Large / mid cap (XBI/IBB core)
     "MRNA", "REGN", "VRTX", "BIIB", "GILD", "AMGN", "ALNY", "NBIX", "SRPT",
     "BMRN", "EXAS", "RARE", "IONS", "HALO", "RCUS", "AXSM", "CLDX", "EXEL",
     "FATE", "IOVA", "MDGL", "NVAX", "SMMT", "TGTX", "TVTX", "VKTX", "ACAD",
@@ -31,13 +31,157 @@ BIOTECH_UNIVERSE = [
     "ARAV", "ARCT", "ARDX", "ARQT", "ATXI", "AUTL", "AVIR", "BCTX", "BDTX",
     "BNGO", "BOLD", "BOLT", "BTAI", "CARA", "CCXI", "CGEM", "CLRB", "CMRX",
     "CNCE", "COGT", "CORT", "CPRX", "CTMX", "DAWN", "DMTK", "DSGN", "ENLV",
-    "ERAS", "ETNB", "EVAX", "FLGT", "FNLG", "IGMS", "INBX", "ITCI", "JANX",
+    "ERAS", "ETNB", "EVAX", "FLGT", "FNLG", "IGMS", "INBX", "JANX",
     "KDMN", "KNSA", "LHCG", "LUMO", "MRSN", "NRIX", "ORCA", "PGEN", "PNTM",
     "PRME", "PSNL", "RETA", "RLMD", "RMTI", "RNLX", "SAGE", "SCPH", "SEER",
     "SLDB", "SPNV", "SVRA", "TCDA", "THRX", "URGN", "VYNE", "OCGN", "BEAM",
     "CRSP", "NTLA", "EDIT", "AGTC", "AILE", "AURA", "AVRO", "BLUE", "BSGM",
     "CASI", "CDMO", "CEMI", "COCP", "CNTX", "FOLD", "PTGX", "AQST", "OSTX",
-    "ACIU", "SGMO", "GOSS", "LGND", "INBX", "XOMA", "BCYC", "ZNTL", "IONS",
+    "ACIU", "INBX", "BCYC", "ZNTL",
+    # Previously missed — confirmed have options + FDA catalysts
+    "ACRS",  # Aclaris Therapeutics ~$800M, dermatology
+    "VRDN",  # Viridian Therapeutics ~$2B, ophthalmology
+    "EQ",    # Equillium ~$200M, autoimmune
+    "TVRD",  # Travere Therapeutics, rare disease
+    "VRAX",  # Viracta Therapeutics, oncology
+    "NCEL",  # Nuvation Bio, oncology
+    "ELAB",  # Elevate Bio / Electra Bio
+    "IBIO",  # iBio, oncology biologics
+    "NNOX",  # Nano-X Imaging, med devices/AI
+    "SHPH",  # Shuttle Pharmaceuticals
+    "CLDI",  # Calidi Biotherapeutics
+    "MBRX",  # Moleculin Biotech
+    "TRIB",  # Triangle Capital/biotech
+    "CDIO",  # Cardiol Therapeutics
+    "XTLB",  # XTL Biopharmaceuticals
+    # Added 2nd round — gainers that were missed + put-dominant decliners to monitor
+    "ABVX",  # Abivax SA ~$1-2B, IBD drug (obefazimod) — real FDA catalyst
+    "GMAB",  # Genmab $4B+, major oncology/immunology FDA submissions
+    "CMMB",  # Chemomab Therapeutics ~$200M, NASH/fibrosis
+    "XRTX",  # XORTX Therapeutics, kidney disease
+    "NXTC",  # NextCure, oncology immunology
+    "CRIS",  # Curis Inc., oncology (hedgehog pathway)
+    "VCNX",  # Vaccinex, neurodegeneration + oncology
+    "CALC",  # CalciMedica, CRAC channel inhibitor
+    "QDEL",  # QuidelOrtho Corp, diagnostics/antigen tests FDA
+    "RSLS",  # Reshape Lifesciences, metabolic devices
+    "APDN",  # Applied DNA Sciences, biotech
+    "EVMN",  # Evommune, autoimmune
+    "JSPR",  # Jasper Therapeutics, bone marrow
+    "VTGN",  # Vistagen Therapeutics, CNS/anxiety (was -70% binary fail)
+    "NVCT",  # Nuvectis Pharma, oncology
+    "AGMB",  # AgomAb Therapeutics, HGF/MET
+    "CTSO",  # CytoSorbents, critical care devices
+    "OMER",  # Omeros Corp, complement system
+    "HURA",  # TuHURA Biosciences, oncology
+    "ACTU",  # Actuate Therapeutics
+    "JSPR",  # Jasper Therapeutics
+    "PYXS",  # Pyxis Oncology
+    "CUPR",  # Cuprina Holdings
+    "BPTH",  # Bio-Path Holdings
+    # Small/mid biotech active in 2024-2025 FDA cycle
+    "ADMA",  # ADMA Biologics
+    "AKBA",  # Akebia Therapeutics
+    "AMRX",  # Amneal Pharmaceuticals
+    "ANAB",  # AnaptysBio
+    "APLS",  # Apellis Pharmaceuticals
+    "ARWR",  # Arrowhead Pharmaceuticals
+    "ATNF",  # 180 Life Sciences
+    "ATRC",  # Atricure
+    "BHVN",  # Biohaven
+    "BNOX",  # Bioxcel Therapeutics
+    "CABA",  # Cabaletta Bio
+    "CBPO",  # China Biologic
+    "CERS",  # Cerus Corp
+    "CHMA",  # Chimera Investment (biotech)
+    "CNMD",  # Conmed
+    "COGT",  # Cogent Biosciences
+    "DAWN",  # Dawn Health
+    "DNLI",  # Denali Therapeutics
+    "DSGN",  # Design Therapeutics
+    "ELVN",  # Enliven Therapeutics
+    "ESPR",  # Esperion Therapeutics
+    "ETNB",  # 89bio
+    "EVLO",  # Evelo Biosciences
+    "FATE",  # Fate Therapeutics
+    "FBIO",  # Fortress Biotech
+    "FHTX",  # Frontier Health Therapy
+    "FLNC",  # Fluence Energy
+    "FWBI",  # First Wave BioPharma
+    "GBIO",  # Generation Bio
+    "GKOS",  # Glaukos
+    "GRPH",  # Graphite Bio
+    "HALO",  # Halozyme
+    "HZNP",  # Horizon Therapeutics
+    "IDYA",  # IDEAYA Biosciences
+    "IMCR",  # Immunocore
+    "IMGO",  # Imago Biosciences
+    "INVA",  # Innoviva
+    "IPSC",  # Century Therapeutics
+    "IRON",  # Disc Medicine
+    "ITOS",  # iTeos Therapeutics
+    "KALA",  # Kala Bio
+    "KDNY",  # Chinook Therapeutics
+    "KNTE",  # Kineta
+    "KROS",  # Keros Therapeutics
+    "KYMR",  # Kymera Therapeutics
+    "LABP",  # Landos Biopharma
+    "LEGN",  # Legend Biotech
+    "LYEL",  # Lyell Immunopharma
+    "MDXG",  # MiMedx
+    "MERUS",  # Merus
+    "MGNX",  # MacroGenics
+    "MGTX",  # MeiraGTx
+    "MIRM",  # Mirum Pharmaceuticals
+    "MORF",  # Morphic Therapeutic
+    "MRUS",  # Merus NV
+    "MYOV",  # Myovant Sciences
+    "NERV",  # Minerva Neurosciences
+    "NKTR",  # Nektar Therapeutics
+    "NUVL",  # Nuvalent
+    "NVRO",  # Nevro Corp
+    "OABI",  # OcuSense
+    "OCUL",  # Ocular Therapeutix
+    "OFIX",  # Orthofix
+    "ONCT",  # Oncternal Therapeutics
+    "ORIC",  # Oric Pharmaceuticals
+    "PACB",  # Pacific Biosciences
+    "PHAT",  # Phathom Pharmaceuticals
+    "PLRX",  # Pliant Therapeutics
+    "PMVP",  # PMV Pharmaceuticals
+    "PRLD",  # Prelude Therapeutics
+    "PRME",  # Prime Medicine
+    "PTGX",  # Protagonist Therapeutics
+    "RLAY",  # Relay Therapeutics
+    "ROIV",  # Roivant Sciences
+    "RVMD",  # Revolution Medicines
+    "RXRX",  # Recursion Pharmaceuticals
+    "SANA",  # Sana Biotechnology
+    "SCLX",  # Scilex Holding
+    "SDGR",  # Schrodinger
+    "SEER",  # Seer Bio
+    "SGEN",  # Seagen
+    "SILK",  # Silk Road Medical
+    "SLNO",  # Soleno Therapeutics
+    "SPRY",  # ARS Pharmaceuticals
+    "SRRK",  # Scholar Rock
+    "STRO",  # Sutro Biopharma
+    "SWTX",  # SpringWorks Therapeutics
+    "TELA",  # Tela Bio
+    "TMCI",  # Treace Medical
+    "TNGX",  # Tango Therapeutics
+    "TPIC",  # TPI Composites
+    "TPTX",  # Turning Point Therapeutics
+    "TVTX",  # Travere Therapeutics
+    "TYRA",  # Tyra Biosciences
+    "UCAR",  # United Auto
+    "VERA",  # Vera Therapeutics
+    "VNDA",  # Vanda Pharmaceuticals
+    "VRTX",  # Vertex (dup — keep)
+    "WLDS",  # Weldricks
+    "XNCR",  # Xencor
+    "YMAB",  # Y-mAbs Therapeutics
+    "ZYME",  # Zymeworks
 ]
 
 # Remove duplicates, keep order
