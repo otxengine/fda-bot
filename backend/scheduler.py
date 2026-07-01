@@ -38,11 +38,13 @@ def run_fda_scrape():
 
         from backend.scrapers.biopharmcatalyst import scrape_biopharmcatalyst
         from backend.scrapers.broad_biotech import scan_broad_biotech
-        fda_events = scrape_fda_calendar()
-        bpw_events = scrape_biopharmawatch()
-        bpc_events = scrape_biopharmcatalyst()
+        from backend.scrapers.fda_multi_source import scrape_all_sources
+        fda_events   = scrape_fda_calendar()
+        bpw_events   = scrape_biopharmawatch()
+        bpc_events   = scrape_biopharmcatalyst()
+        multi_events = scrape_all_sources(days_forward=90)
         broad_events = scan_broad_biotech(iv_rank_threshold=60, max_tickers=150)
-        all_events = fda_events + bpw_events + bpc_events + broad_events
+        all_events   = fda_events + bpw_events + bpc_events + multi_events + broad_events
 
         added = 0
         for event_data in all_events:

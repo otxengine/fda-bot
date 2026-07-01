@@ -121,8 +121,27 @@ def scan_broad_biotech(
             company = info.get("longName") or info.get("shortName") or ticker
             stock_price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
 
-            # Estimate event window: use IV-implied move to guess ~30 days out
-            event_date = today + timedelta(days=days_lookforward)
+            # Estimate event date: find expiry with highest total OI
+            # (the market clusters OI around the catalyst date)
+            event_date = today + timedelta(days=days_lookforward)  # fallback
+            best_oi = 0
+            for exp in expirations[:6]:  # check first 6 expirations
+                try:
+                    exp_date = date.fromisoformat(exp)
+                    if exp_date <= today:
+                        continue
+                    chain = t.option_chain(exp)
+                    total_oi = 0
+                    if not chain.calls.empty:
+                        total_oi += chain.calls["openInterest"].sum()
+                    if not chain.puts.empty:
+                        total_oi += chain.puts["openInterest"].sum()
+                    if total_oi > best_oi:
+                        best_oi = total_oi
+                        # Event is likely just before expiry (1-2 days before)
+                        event_date = exp_date - timedelta(days=1)
+                except Exception:
+                    continue
 
             results.append({
                 "ticker":     ticker,
