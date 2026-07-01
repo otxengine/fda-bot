@@ -182,6 +182,25 @@ BIOTECH_UNIVERSE = [
     "XNCR",  # Xencor
     "YMAB",  # Y-mAbs Therapeutics
     "ZYME",  # Zymeworks
+    # Batch 3 — from user examples July 2026
+    "APGE",  # Apogee Therapeutics $133, autoimmune +46%
+    "DFTX",  # Definium Therapeutics $45, oncology +49%
+    "BFLY",  # Butterfly Network $8, ultrasound imaging +55%
+    "ABSI",  # Absci Corporation $11, AI drug discovery +35%
+    "GALT",  # Galectin Therapeutics $4, liver disease — C/P 16.57x NOW
+    "NVCR",  # NovoCure $15, tumor treating fields — C/P 7.81x NOW
+    "SLN",   # Silence Therapeutics $10, RNA therapeutics +26%
+    "HELP",  # Cybin Inc. $6, psychedelic medicine +18%
+    "ICCM",  # IceCure Medical $5, cryotherapy +51%
+    "NVCT",  # Nuvectis Pharma $19, oncology (binary — was -35% then +39%)
+    "GALT",  # Galectin (dup safe — dedup removes it)
+    "KARD",  # Kardigan Inc. $22, cardiology +35%
+    "MSLE",  # Satellos Bioscience $7, muscle disease +19%
+    "ERNA",  # Ernexa Therapeutics $6, oncology +17%
+    "PASG",  # Passage Bio $4, gene therapy
+    "CGTX",  # Cognition Therapeutics $1, Alzheimer's
+    "HSCS",  # HeartSciences $2, cardiac AI
+    "VTAK",  # Catheter Precision $1, cardiac ablation
 ]
 
 # Remove duplicates, keep order

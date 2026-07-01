@@ -29,8 +29,17 @@ def _has_real_options(ticker: str, price: float) -> bool:
         return False
     try:
         import yfinance as yf
-        exps = yf.Ticker(ticker).options
-        return bool(exps and len(exps) >= 1)
+        t = yf.Ticker(ticker)
+        exps = t.options
+        if not exps:
+            return False
+        # Verify there's actual open interest (not just listed but dead options)
+        try:
+            chain = t.option_chain(exps[0])
+            total_oi = chain.calls["openInterest"].sum() + chain.puts["openInterest"].sum()
+            return total_oi >= 50
+        except Exception:
+            return len(exps) >= 1
     except Exception:
         return False
 
@@ -58,8 +67,8 @@ def scan_one(
     market_cap = info.get("market_cap", 0)
 
     use_options_path = (
-        price >= 3.0
-        and (market_cap or 0) >= 10_000_000
+        price >= 1.0                      # lowered from $3 — many legit biotechs trade $1-3
+        and (market_cap or 0) >= 5_000_000
         and _has_real_options(ticker, price)
     )
 
