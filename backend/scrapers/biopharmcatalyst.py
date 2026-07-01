@@ -12,7 +12,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+import os
+
 API_URL = "https://www.biopharmcatalyst.com/api/fda-calendar"
+BPC_API_KEY = os.getenv("BPC_API_KEY", "bpc_f84d9b2ef66c6da19397e24a0833f921")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
