@@ -14,13 +14,13 @@ import requests
 logger = logging.getLogger(__name__)
 
 API_URL = "https://www.biopharmcatalyst.com/api/fda-calendar"
+# BPC public endpoint is limited to 10 near-term events.
+# The v1 REST API (full access) is at /api/v1/{endpoint} — endpoint name TBD from BPC docs.
 BPC_API_KEY = os.getenv("BPC_API_KEY", "bpc_f84d9b2ef66c6da19397e24a0833f921")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
     "Referer": "https://www.biopharmcatalyst.com/calendars/fda-calendar",
-    "Authorization": f"Bearer {BPC_API_KEY}",
-    "X-Api-Key": BPC_API_KEY,
 }
 
 # Only track PDUFA + Phase 3 + AdCom (highest-conviction catalysts)
@@ -36,18 +36,12 @@ def scrape_biopharmcatalyst(include_all_phases: bool = True) -> list[dict]:
     today = date.today()
 
     try:
-        # Fetch all pages (full API access returns all upcoming events)
+        # Fetch all pages
         page = 1
         while True:
             resp = requests.get(
                 API_URL,
-                params={
-                    "page": page,
-                    "column": "catalyst_date",
-                    "direction": "asc",
-                    "api_key": BPC_API_KEY,
-                    "key": BPC_API_KEY,
-                },
+                params={"page": page, "column": "catalyst_date", "direction": "asc"},
                 headers=HEADERS,
                 timeout=15,
             )
