@@ -565,8 +565,18 @@ def scan_and_alert():
                 db.add(signal)
 
                 days_until = (event.event_date - today).days
-                # Only alert for events within the 0-7 day catalyst window
+                # Only alert for events within 0-7 day catalyst window
+                # Skip if already alerted in last 4 hours (cooldown)
                 if result.get("stock_signal") == "BUY" and 0 <= days_until <= 7:
+                    from datetime import datetime, timedelta as td
+                    cooldown_cutoff = datetime.utcnow() - td(hours=4)
+                    recent_alert = db.query(AlertLog).filter(
+                        AlertLog.ticker == event.ticker,
+                        AlertLog.alert_type == "stock_buy",
+                        AlertLog.triggered_at >= cooldown_cutoff,
+                    ).first()
+                    if recent_alert:
+                        continue
                     buy_signals.append({
                         "ticker":            event.ticker,
                         "company":           event.company,

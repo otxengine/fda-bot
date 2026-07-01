@@ -50,12 +50,18 @@ def run_fda_scrape():
 
         added = 0
         for event_data in all_events:
-            # Deduplicate by ticker + event_date + event_type
-            existing = db.query(FdaEvent).filter(
-                FdaEvent.event_date == event_data["event_date"],
-                FdaEvent.event_type == event_data.get("event_type"),
-                FdaEvent.company == event_data["company"],
-            ).first()
+            # Deduplicate: prefer ticker+date (works across sources with different company names)
+            ticker = event_data.get("ticker")
+            if ticker:
+                existing = db.query(FdaEvent).filter(
+                    FdaEvent.ticker == ticker,
+                    FdaEvent.event_date == event_data["event_date"],
+                ).first()
+            else:
+                existing = db.query(FdaEvent).filter(
+                    FdaEvent.event_date == event_data["event_date"],
+                    FdaEvent.company == event_data["company"],
+                ).first()
 
             if not existing:
                 event = FdaEvent(
@@ -100,7 +106,6 @@ def run_options_scan(force: bool = False):
         # Scan all events up to 60 days (build signal data), alert only on 0-7 day window
         today = date.today()
         cutoff = today + timedelta(days=60)
-        alert_cutoff = today + timedelta(days=7)
         events = db.query(FdaEvent).filter(
             FdaEvent.event_date >= today,
             FdaEvent.event_date <= cutoff,

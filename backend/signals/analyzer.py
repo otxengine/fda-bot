@@ -274,7 +274,7 @@ def analyze_ticker(
         except Exception as e:
             logger.debug(f"Flow velocity error for {ticker}: {e}")
 
-    # ── Stock signal (1-5 day window for stock trading) ──────────────────────
+    # ── Stock signal (0-7 day window for stock trading) ──────────────────────
     from datetime import timedelta
     stock_signal = "WATCH"
     stock_signal_reason = ""
@@ -282,7 +282,7 @@ def analyze_ticker(
     stop_loss_price_val = round(stock_price * 0.92, 2) if stock_price else None
     target_date_val = (event_date - timedelta(days=1)).isoformat() if event_date else None
 
-    if 1 <= days_until <= 5:
+    if 0 <= days_until <= 7:
         score_val = scores["composite_score"]
         cp_val    = scores["call_put_ratio"]
         fv_val    = flow_velocity
@@ -326,9 +326,9 @@ def analyze_ticker(
             stock_signal = "AVOID"
             stock_signal_reason = "IV overpriced with weak directional signal"
     else:
-        # Outside 1-5 day window
+        # Outside 0-7 day window — monitoring only
         stock_signal = "WATCH"
-        stock_signal_reason = f"monitoring — {days_until}d until event (enter at 1-5d)"
+        stock_signal_reason = f"monitoring — {days_until}d until event (enter at 0-7d)"
         entry_price_val = None
         stop_loss_price_val = None
 
