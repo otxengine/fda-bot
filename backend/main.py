@@ -806,9 +806,9 @@ def send_all_outcomes(db: Session = Depends(get_db)):
 
 @app.get("/api/stock-signals")
 def get_stock_signals(db: Session = Depends(get_db)):
-    """Return latest BUY stock signals (1-5 day FDA window)."""
+    """Return latest BUY stock signals (0-7 day FDA window)."""
     today = date.today()
-    cutoff = today + timedelta(days=5)
+    cutoff = today + timedelta(days=7)
 
     events = {
         e.ticker: e for e in db.query(FdaEvent).filter(
@@ -834,7 +834,7 @@ def get_stock_signals(db: Session = Depends(get_db)):
     for sig in signals:
         ev = events.get(sig.ticker)
         days_until = (ev.event_date - today).days if ev else None
-        if days_until is None or days_until > 5:
+        if days_until is None or days_until > 7:
             continue
 
         results.append({
