@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 from backend.database import init_db, get_db, SessionLocal
 from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog
-from backend.scheduler import create_scheduler, run_fda_scrape, run_options_scan, run_history_update, run_cleanup
+from backend.scheduler import (
+    create_scheduler, run_fda_scrape, run_options_scan,
+    run_history_update, run_cleanup, run_realtime_scan,
+)
 from backend.data.polygon import PolygonClient
 from backend.data.yfinance_client import YFinanceClient
 from backend.signals.analyzer import analyze_ticker, compute_composite_score
@@ -982,18 +985,37 @@ def acknowledge_all_alerts(db: Session = Depends(get_db)):
 
 @app.get("/api/status")
 def get_status(db: Session = Depends(get_db)):
-    """System status and stats."""
-    total_events = db.query(FdaEvent).filter(FdaEvent.event_date >= date.today()).count()
+    """System status, scan schedule, and stats."""
+    today = date.today()
+    total_events = db.query(FdaEvent).filter(FdaEvent.event_date >= today).count()
+    week_events  = db.query(FdaEvent).filter(
+        FdaEvent.event_date >= today,
+        FdaEvent.event_date <= today + timedelta(days=7),
+        FdaEvent.ticker.isnot(None),
+    ).count()
     total_signals = db.query(OptionsSignal).count()
     latest_scan = db.query(OptionsSignal).order_by(OptionsSignal.scan_time.desc()).first()
 
+    # Next scheduled jobs
+    jobs_info = []
+    if scheduler:
+        for job in scheduler.get_jobs():
+            next_run = job.next_run_time
+            jobs_info.append({
+                "id":       job.id,
+                "name":     job.name,
+                "next_run": next_run.isoformat() if next_run else None,
+            })
+
     return {
-        "status": "running",
-        "upcoming_events": total_events,
-        "total_signals": total_signals,
-        "last_scan": latest_scan.scan_time.isoformat() if latest_scan else None,
+        "status":             "running",
+        "upcoming_events":    total_events,
+        "events_next_7d":     week_events,
+        "total_signals":      total_signals,
+        "last_scan":          latest_scan.scan_time.isoformat() if latest_scan else None,
         "polygon_configured": bool(os.getenv("POLYGON_API_KEY")),
         "historical_records": db.query(HistoricalResult).count(),
+        "scheduled_jobs":     jobs_info,
     }
 
 

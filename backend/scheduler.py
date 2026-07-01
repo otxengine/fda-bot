@@ -84,10 +84,129 @@ def run_fda_scrape():
         logger.error(f"FDA scrape job failed: {e}")
 
 
+def run_realtime_scan(days_window: int = 7):
+    """
+    High-frequency focused scan for events within days_window days.
+    Sends BUY alerts immediately. Uses AlertLog (4h cooldown) to prevent spam.
+    Called every 5 min (urgent 0-2d) and every 15 min (focused 0-7d).
+    """
+    try:
+        from datetime import date, timedelta, datetime
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, OptionsSignal, AlertLog
+        from backend.data.polygon import PolygonClient
+        from backend.data.yfinance_client import YFinanceClient
+        from backend.signals.analyzer import analyze_ticker
+
+        db = SessionLocal()
+        today = date.today()
+        cutoff = today + timedelta(days=days_window)
+
+        events = db.query(FdaEvent).filter(
+            FdaEvent.event_date >= today,
+            FdaEvent.event_date <= cutoff,
+            FdaEvent.ticker.isnot(None),
+        ).all()
+
+        if not events:
+            db.close()
+            return
+
+        # Deduplicate tickers (same ticker may have multiple events)
+        seen_tickers = set()
+        unique_events = []
+        for e in sorted(events, key=lambda x: x.event_date):
+            if e.ticker not in seen_tickers:
+                seen_tickers.add(e.ticker)
+                unique_events.append(e)
+
+        logger.info(f"Realtime scan ({days_window}d): {len(unique_events)} tickers...")
+
+        polygon = PolygonClient()
+        yf_client = YFinanceClient()
+        buy_signals = []
+        cooldown_cutoff = datetime.utcnow() - timedelta(hours=4)
+
+        for event in unique_events:
+            # Skip if already alerted in last 4 hours
+            recent = db.query(AlertLog).filter(
+                AlertLog.ticker == event.ticker,
+                AlertLog.alert_type == "stock_buy",
+                AlertLog.triggered_at >= cooldown_cutoff,
+            ).first()
+            if recent:
+                continue
+
+            result = analyze_ticker(
+                ticker=event.ticker,
+                polygon_client=polygon,
+                yfinance_client=yf_client,
+                event_date=event.event_date,
+                event_type=event.event_type,
+                drug_name=event.drug_name,
+                company=event.company,
+                db=db,
+                fda_event_id=event.id,
+            )
+            if not result:
+                continue
+
+            signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
+            db.add(signal)
+
+            days_until = (event.event_date - today).days
+            if result.get("stock_signal") == "BUY" and 0 <= days_until <= days_window:
+                db.add(AlertLog(
+                    ticker=event.ticker,
+                    alert_type="stock_buy",
+                    score_at_trigger=result.get("composite_score"),
+                    message=f"BUY {event.ticker} score={result.get('composite_score'):.0f} event={event.event_date} [{days_window}d scan]",
+                ))
+                buy_signals.append({
+                    "ticker":            event.ticker,
+                    "company":           event.company,
+                    "event_type":        event.event_type,
+                    "days_until":        days_until,
+                    "entry_price":       result.get("entry_price"),
+                    "stop_loss":         result.get("stop_loss_price"),
+                    "target_date":       result.get("target_date"),
+                    "score":             result.get("composite_score"),
+                    "reason":            result.get("stock_signal_reason"),
+                    "expected_move":     result.get("expected_move_pct"),
+                    "call_put_ratio":    result.get("call_put_ratio"),
+                    "fundamental_score": result.get("fundamental_score"),
+                    "clinical_score":    result.get("clinical_score"),
+                    "analyst_bullish":   result.get("analyst_bullish"),
+                    "squeeze_setup":     result.get("squeeze_setup"),
+                })
+
+        db.commit()
+        db.close()
+
+        if buy_signals:
+            _notify_stock_buy_signals(buy_signals)
+            logger.info(f"Realtime scan ({days_window}d): {len(buy_signals)} BUY alerts sent")
+        else:
+            logger.debug(f"Realtime scan ({days_window}d): no new BUY signals")
+
+    except Exception as e:
+        logger.error(f"Realtime scan ({days_window}d) failed: {e}")
+
+
+def run_urgent_scan():
+    """Every 5 min during market hours — events 0-2 days away (most time-sensitive)."""
+    run_realtime_scan(days_window=2)
+
+
+def run_focused_scan():
+    """Every 15 min during extended hours — events 0-7 days away."""
+    run_realtime_scan(days_window=7)
+
+
 def run_options_scan(force: bool = False):
-    """Job: scan options data for all upcoming FDA event tickers."""
+    """Job: full scan of all 60-day events — builds signal history, runs hourly."""
     if not force and not is_market_hours():
-        logger.debug("Outside market hours - skipping options scan")
+        logger.debug("Outside market hours - skipping full options scan")
         return
 
     try:
@@ -705,70 +824,121 @@ def run_daily_digest():
 
 
 def create_scheduler() -> BackgroundScheduler:
-    """Create and configure the APScheduler instance."""
+    """
+    24/7 scheduler with tiered scanning:
+      - Every 2h, 24/7    : FDA event scrape (catches EDGAR filings overnight)
+      - Every 5 min, 9-17 : Urgent scan — events 0-2 days (most time-sensitive)
+      - Every 15 min, 8-20: Focused scan — events 0-7 days (real-time BUY alerts)
+      - Every 60 min, 9-16: Full scan — all 60-day events (builds signal history)
+      - Every 15 min, 8-20: Alert check (score spikes, flow surges, IV spikes)
+      - 8:30 AM daily     : Morning digest
+      - 9:00 AM daily     : History price update
+      - 2:00 AM daily     : Nightly cleanup
+    """
     scheduler = BackgroundScheduler(timezone=EST)
 
-    # Scrape FDA calendar every 6 hours
+    # ── 24/7: FDA event scrape every 2 hours ──────────────────────────────────
     scheduler.add_job(
         run_fda_scrape,
-        trigger=IntervalTrigger(hours=6),
+        trigger=IntervalTrigger(hours=2),
         id="fda_scrape",
-        name="FDA Calendar Scrape",
+        name="FDA Event Scrape (2h, 24/7)",
         replace_existing=True,
+        max_instances=1,
     )
 
-    # Scan options every 30 minutes during market hours (Mon-Fri 9:30-16:00 EST)
+    # ── URGENT: 0-2 day events, every 5 min, Mon-Fri 9:00-17:00 EST ──────────
+    scheduler.add_job(
+        run_urgent_scan,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-16",
+            minute="*/5",
+            timezone=EST,
+        ),
+        id="urgent_scan",
+        name="Urgent Scan 0-2d (5min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── FOCUSED: 0-7 day events, every 15 min, Mon-Fri 8:00-20:00 EST ────────
+    scheduler.add_job(
+        run_focused_scan,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="8-19",
+            minute="*/15",
+            timezone=EST,
+        ),
+        id="focused_scan",
+        name="Focused Scan 0-7d (15min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── FULL: all 60-day events, every hour, Mon-Fri 9:00-16:00 EST ──────────
     scheduler.add_job(
         run_options_scan,
         trigger=CronTrigger(
             day_of_week="mon-fri",
             hour="9-15",
-            minute="0,30",
+            minute="0",
             timezone=EST,
         ),
         id="options_scan",
-        name="Options Data Scan",
+        name="Full Options Scan 60d (hourly)",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
-    # Nightly cleanup at 2:00 AM EST
-    scheduler.add_job(
-        run_cleanup,
-        trigger=CronTrigger(hour=2, minute=0, timezone=EST),
-        id="nightly_cleanup",
-        name="Nightly Cleanup",
-        replace_existing=True,
-    )
-
-    # History price update every morning at 9:00 AM EST
-    scheduler.add_job(
-        run_history_update,
-        trigger=CronTrigger(hour=9, minute=0, timezone=EST),
-        id="history_update",
-        name="Historical Price Update",
-        replace_existing=True,
-    )
-
-    # Daily digest at 8:30 AM EST (before market open)
-    scheduler.add_job(
-        run_daily_digest,
-        trigger=CronTrigger(hour=8, minute=30, timezone=EST),
-        id="daily_digest",
-        name="Daily FDA Digest",
-        replace_existing=True,
-    )
-
-    # Alert check every 30 minutes during market hours
+    # ── ALERT CHECK: score spikes, flow surges — every 15 min 8:00-20:00 EST ─
     scheduler.add_job(
         run_alert_check,
         trigger=CronTrigger(
             day_of_week="mon-fri",
-            hour="9-16",
-            minute="0,30",
+            hour="8-19",
+            minute="*/15",
             timezone=EST,
         ),
         id="alert_check",
-        name="Alert Condition Check",
+        name="Alert Check (15min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── MORNING DIGEST: 8:30 AM EST, Mon-Fri ─────────────────────────────────
+    scheduler.add_job(
+        run_daily_digest,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=8, minute=30,
+            timezone=EST,
+        ),
+        id="daily_digest",
+        name="Morning Digest (8:30 EST)",
+        replace_existing=True,
+    )
+
+    # ── HISTORY UPDATE: 9:00 AM EST ───────────────────────────────────────────
+    scheduler.add_job(
+        run_history_update,
+        trigger=CronTrigger(hour=9, minute=0, timezone=EST),
+        id="history_update",
+        name="Historical Price Update (9:00 EST)",
+        replace_existing=True,
+    )
+
+    # ── NIGHTLY CLEANUP: 2:00 AM EST ─────────────────────────────────────────
+    scheduler.add_job(
+        run_cleanup,
+        trigger=CronTrigger(hour=2, minute=0, timezone=EST),
+        id="nightly_cleanup",
+        name="Nightly Cleanup (2:00 EST)",
         replace_existing=True,
     )
 
