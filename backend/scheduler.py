@@ -97,9 +97,10 @@ def run_options_scan(force: bool = False):
         polygon = PolygonClient()
         yf_client = YFinanceClient()
 
-        # Get events in next 60 days with known tickers
+        # Scan all events up to 60 days (build signal data), alert only on 0-7 day window
         today = date.today()
         cutoff = today + timedelta(days=60)
+        alert_cutoff = today + timedelta(days=7)
         events = db.query(FdaEvent).filter(
             FdaEvent.event_date >= today,
             FdaEvent.event_date <= cutoff,
@@ -136,15 +137,20 @@ def run_options_scan(force: bool = False):
                 db.add(signal)
                 scanned += 1
 
-                # Send BUY alert when stock_signal becomes BUY (score≥50 + bullish flow)
+                # Send BUY alert only when:
+                # 1. signal flipped to BUY (score≥50 + bullish flow)
+                # 2. AND event is within 0-7 days (prime catalyst window)
+                days_until = (event.event_date - today).days
                 prev_stock_signal = prev_signal.stock_signal if prev_signal else None
                 new_stock_signal = result.get("stock_signal")
-                if new_stock_signal == "BUY" and prev_stock_signal != "BUY":
+                if (new_stock_signal == "BUY"
+                        and prev_stock_signal != "BUY"
+                        and 0 <= days_until <= 7):
                     new_buy_signals.append({
                         "ticker":           event.ticker,
                         "company":          event.company,
                         "event_type":       event.event_type,
-                        "days_until":       (event.event_date - today).days,
+                        "days_until":       days_until,
                         "entry_price":      result.get("entry_price"),
                         "stop_loss":        result.get("stop_loss_price"),
                         "target_date":      result.get("target_date"),

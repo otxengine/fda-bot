@@ -564,12 +564,14 @@ def scan_and_alert():
                 signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
                 db.add(signal)
 
-                if result.get("stock_signal") == "BUY":
+                days_until = (event.event_date - today).days
+                # Only alert for events within the 0-7 day catalyst window
+                if result.get("stock_signal") == "BUY" and 0 <= days_until <= 7:
                     buy_signals.append({
                         "ticker":            event.ticker,
                         "company":           event.company,
                         "event_type":        event.event_type,
-                        "days_until":        (event.event_date - today).days,
+                        "days_until":        days_until,
                         "entry_price":       result.get("entry_price"),
                         "stop_loss":         result.get("stop_loss_price"),
                         "target_date":       result.get("target_date"),
@@ -592,11 +594,13 @@ def scan_and_alert():
             else:
                 # Send a summary if nothing qualifies
                 from backend.signals.alerter import send_telegram
+                week_events = [e for e in events if (e.event_date - today).days <= 7]
                 send_telegram(
                     f"🔍 <b>סריקה הושלמה</b>\n\n"
-                    f"נסרקו {len(events)} מניות עם אירועי FDA קרובים.\n"
-                    f"<b>אין כרגע מניות שעומדות בקריטריוני הקנייה</b> (score≥50 + flow חיובי בחלון 1-5 ימים).\n\n"
-                    f"הסקורים הנוכחיים נמוכים מהסף או שהאירועים רחוקים מדי."
+                    f"נסרקו {len(events)} מניות עם אירועי FDA ב-60 ימים הקרובים.\n"
+                    f"אירועים בחלון 0-7 ימים: <b>{len(week_events)}</b>\n\n"
+                    f"<b>אין כרגע מניות שעומדות בקריטריוני הקנייה</b>\n"
+                    f"(score≥50 + C/P≥1.8 + אירוע בחלון 0-7 ימים)"
                 )
                 logger.info("scan-and-alert: no BUY signals found")
 
