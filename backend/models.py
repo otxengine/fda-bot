@@ -106,6 +106,23 @@ class AlertLog(Base):
     acknowledged    = Column(Integer, default=0)
 
 
+class LearningInsight(Base):
+    """
+    Stores LLM-generated insights: negative event flags + weight adjustments.
+    Auto-expires via expires_at (checked at query time).
+    """
+    __tablename__ = "learning_insights"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    ticker       = Column(String, nullable=True, index=True)   # None = global insight
+    insight_type = Column(String, nullable=False)              # "negative_event" | "weight_adjustment"
+    insight_json = Column(Text,   nullable=False)              # JSON payload
+    confidence   = Column(Float,  default=0.5)
+    sample_size  = Column(Integer, default=0)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    expires_at   = Column(DateTime, nullable=True)             # NULL = never expires
+
+
 class HistoricalResult(Base):
     __tablename__ = "historical_results"
 

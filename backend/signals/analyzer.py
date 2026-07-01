@@ -67,6 +67,7 @@ def compute_composite_score(
     premium_flow: float,
     expiration_score: float = 0.0,
     fundamental_score: float = 50.0,
+    weight_overrides: dict = None,
 ) -> dict:
     vol_oi = total_volume / open_interest if open_interest > 0 else 0
 
@@ -76,20 +77,31 @@ def compute_composite_score(
 
     call_put_ratio = (call_volume / put_volume) if put_volume > 0 else (2.0 if call_volume > 0 else 1.0)
 
-    s_exp    = score_iv_rank(expiration_score)   # already 0-100
+    s_exp    = score_iv_rank(expiration_score)
     s_iv     = score_iv_rank(iv_rank)
     s_cp     = score_call_put(call_volume, put_volume)
     s_voi    = score_vol_oi(vol_oi)
     s_prem   = score_premium(premium_flow)
     s_fund   = max(0.0, min(100.0, float(fundamental_score)))
 
+    # Use weight_overrides if provided (from learning engine), else defaults
+    wo = weight_overrides or {}
+    we = wo.get("expiration",  WEIGHT_EXPIRATION)
+    wi = wo.get("iv_rank",     WEIGHT_IV_RANK)
+    wc = wo.get("call_put",    WEIGHT_CALL_PUT)
+    wv = wo.get("vol_oi",      WEIGHT_VOL_OI)
+    wp = wo.get("premium",     WEIGHT_PREMIUM)
+    wf = wo.get("fundamental", WEIGHT_FUNDAMENTAL)
+    total_w = we + wi + wc + wv + wp + wf
+
+    # Each component is 0-100; weights normalized to sum=1 → composite is 0-100
     composite = (
-        s_exp  * (WEIGHT_EXPIRATION  / 100) +
-        s_iv   * (WEIGHT_IV_RANK     / 100) +
-        s_cp   * (WEIGHT_CALL_PUT    / 100) +
-        s_voi  * (WEIGHT_VOL_OI      / 100) +
-        s_prem * (WEIGHT_PREMIUM     / 100) +
-        s_fund * (WEIGHT_FUNDAMENTAL / 100)
+        s_exp  * (we / total_w) +
+        s_iv   * (wi / total_w) +
+        s_cp   * (wc / total_w) +
+        s_voi  * (wv / total_w) +
+        s_prem * (wp / total_w) +
+        s_fund * (wf / total_w)
     )
 
     alert_level = (
@@ -188,6 +200,31 @@ def analyze_ticker(
         total_oi     = 1
         premium_flow = 0
 
+    # ── Negative event detection (LLM) ───────────────────────────────────────
+    neg_penalty = 0
+    neg_reason  = ""
+    if db and company:
+        try:
+            from backend.signals.learning_engine import scan_ticker_for_negatives
+            neg = scan_ticker_for_negatives(
+                ticker=ticker, company=company,
+                event_type=event_type or "", db=db,
+            )
+            if neg.get("negative"):
+                neg_penalty = neg.get("penalty", 0)
+                neg_reason  = neg.get("reason", "")
+        except Exception as e:
+            logger.debug(f"Negative event scan {ticker}: {e}")
+
+    # ── Learned weight adjustments ────────────────────────────────────────────
+    learned_wadj = {}
+    if db:
+        try:
+            from backend.signals.learning_engine import get_learned_weight_adjustments
+            learned_wadj = get_learned_weight_adjustments(db)
+        except Exception as e:
+            logger.debug(f"Learned weights fetch {ticker}: {e}")
+
     # ── Fundamental analysis ──────────────────────────────────────────────────
     fund_result = {"fundamental_score": 50.0, "fundamental_flags": {}, "fundamental_detail": {}}
     try:
@@ -201,6 +238,15 @@ def analyze_ticker(
     except Exception as e:
         logger.debug(f"Fundamental analysis failed for {ticker}: {e}")
 
+    # ── Apply learned weight adjustments ─────────────────────────────────────
+    # Clamp each adjustment to ±15 so learning can't flip the model entirely
+    w_exp  = max(5, WEIGHT_EXPIRATION  + learned_wadj.get("expiration",  0))
+    w_iv   = max(5, WEIGHT_IV_RANK     + learned_wadj.get("iv_rank",     0))
+    w_cp   = max(5, WEIGHT_CALL_PUT    + learned_wadj.get("call_put",    0))
+    w_voi  = max(5, WEIGHT_VOL_OI      + learned_wadj.get("vol_oi",      0))
+    w_prem = max(5, WEIGHT_PREMIUM     + learned_wadj.get("premium",     0))
+    w_fund = max(5, WEIGHT_FUNDAMENTAL + learned_wadj.get("fundamental", 0))
+
     # ── Composite score ───────────────────────────────────────────────────────
     scores = compute_composite_score(
         call_volume=total_call_vol,
@@ -213,7 +259,20 @@ def analyze_ticker(
         premium_flow=premium_flow,
         expiration_score=exp_result["expiration_score"],
         fundamental_score=fund_result["fundamental_score"],
+        weight_overrides={
+            "expiration": w_exp, "iv_rank": w_iv, "call_put": w_cp,
+            "vol_oi": w_voi, "premium": w_prem, "fundamental": w_fund,
+        },
     )
+
+    # Apply negative event penalty (caps at -50 pts from composite)
+    if neg_penalty > 0:
+        penalized = max(0.0, scores["composite_score"] - neg_penalty)
+        scores = {**scores, "composite_score": round(penalized, 1)}
+        if scores["composite_score"] < THRESHOLD_RED:
+            scores["alert_level"] = (
+                "orange" if scores["composite_score"] >= THRESHOLD_ORANGE else "green"
+            )
 
     # ── Probability calibration ───────────────────────────────────────────────
     prob = {"p_up_5": None, "p_up_10": None, "p_down_5": None, "p_down_10": None,
@@ -404,6 +463,10 @@ def analyze_ticker(
         "clinical_score":     (fund_result.get("fundamental_detail") or {}).get("clinical_score"),
         "trial_risk":         int(fund_result["fundamental_flags"].get("trial_risk", False)),
         "strong_trial":       int(fund_result["fundamental_flags"].get("strong_trial", False)),
+        # learning engine
+        "_neg_penalty":       neg_penalty,
+        "_neg_reason":        neg_reason,
+        "_learned_wadj":      learned_wadj,
         # internal (not stored)
         "_component_scores":  scores["component_scores"],
         "_weights":           scores["weights"],

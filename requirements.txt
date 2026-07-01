@@ -10,3 +10,4 @@ httpx
 lxml
 pytz
 python-telegram-bot
+anthropic

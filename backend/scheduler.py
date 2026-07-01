@@ -727,6 +727,39 @@ def run_alert_check():
         logger.error(f"Alert check job failed: {e}")
 
 
+def run_learning_update():
+    """
+    Job: analyze historical outcomes with Claude and update learned weights.
+    Runs after history_update (Mon-Fri 9:05 AM) and weekly on Sunday.
+    Also scans Telegram digest with learning summary.
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.signals.learning_engine import (
+            analyze_outcome_patterns, build_learning_digest
+        )
+        from backend.signals.alerter import send_telegram
+
+        db = SessionLocal()
+        insights = analyze_outcome_patterns(db)
+        db.commit()
+        db.close()
+
+        if insights:
+            msg = build_learning_digest(insights)
+            send_telegram(msg)
+            logger.info(
+                f"Learning update: accuracy={insights.get('accuracy_rate')}% "
+                f"confidence={insights.get('confidence')} "
+                f"n={insights.get('sample_size')}"
+            )
+        else:
+            logger.info("Learning update: not enough data for pattern analysis yet")
+
+    except Exception as e:
+        logger.error(f"Learning update job failed: {e}")
+
+
 def run_daily_digest():
     """Job: send daily Telegram digest of tickers with FDA events in 1-2 days."""
     try:
@@ -940,6 +973,33 @@ def create_scheduler() -> BackgroundScheduler:
         id="nightly_cleanup",
         name="Nightly Cleanup (2:00 EST)",
         replace_existing=True,
+    )
+
+    # ── LEARNING UPDATE: Mon-Fri 9:05 AM EST (after history update) ──────────
+    # Also runs Sunday 8:00 AM for weekly deep analysis
+    scheduler.add_job(
+        run_learning_update,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=9, minute=5,
+            timezone=EST,
+        ),
+        id="learning_update_daily",
+        name="Learning Update - Daily (9:05 EST)",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        run_learning_update,
+        trigger=CronTrigger(
+            day_of_week="sun",
+            hour=8, minute=0,
+            timezone=EST,
+        ),
+        id="learning_update_weekly",
+        name="Learning Update - Weekly (Sun 8:00 EST)",
+        replace_existing=True,
+        max_instances=1,
     )
 
     return scheduler

@@ -28,6 +28,7 @@ from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog
 from backend.scheduler import (
     create_scheduler, run_fda_scrape, run_options_scan,
     run_history_update, run_cleanup, run_realtime_scan,
+    run_learning_update,
 )
 from backend.data.polygon import PolygonClient
 from backend.data.yfinance_client import YFinanceClient
@@ -981,6 +982,42 @@ def acknowledge_all_alerts(db: Session = Depends(get_db)):
     db.query(AlertLog).filter(AlertLog.acknowledged == 0).update({"acknowledged": 1})
     db.commit()
     return {"status": "ok"}
+
+
+@app.post("/api/learning-run")
+def trigger_learning():
+    """Manually trigger LLM learning update (outcome analysis)."""
+    import threading
+    threading.Thread(target=run_learning_update, daemon=True).start()
+    return {"status": "learning update triggered", "message": "Claude will analyze outcomes and send Telegram digest shortly"}
+
+
+@app.get("/api/learning")
+def get_learning_insights(db: Session = Depends(get_db)):
+    """Return active learning insights (weight adjustments + negative event flags)."""
+    from backend.models import LearningInsight
+    now = datetime.utcnow()
+    insights = db.query(LearningInsight).filter(
+        LearningInsight.expires_at > now
+    ).order_by(LearningInsight.created_at.desc()).limit(50).all()
+
+    result = []
+    for ins in insights:
+        try:
+            data = __import__("json").loads(ins.insight_json)
+        except Exception:
+            data = {}
+        result.append({
+            "id":           ins.id,
+            "ticker":       ins.ticker,
+            "type":         ins.insight_type,
+            "confidence":   ins.confidence,
+            "sample_size":  ins.sample_size,
+            "created_at":   ins.created_at.isoformat(),
+            "expires_at":   ins.expires_at.isoformat() if ins.expires_at else None,
+            "data":         data,
+        })
+    return {"insights": result, "count": len(result)}
 
 
 @app.get("/api/status")
