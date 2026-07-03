@@ -4,10 +4,17 @@ Penny/micro-cap biotech catalyst scanner.
 Options flow can't detect stocks with price < $3 or market_cap < $30M.
 This scanner uses a completely different approach:
 
-  VOLUME SPIKE  — today's volume vs 20-day average (most predictive signal)
-  MOMENTUM      — 3-day price change already building
-  SHORT SQUEEZE — high short % → squeeze fuel
-  FDA PROXIMITY — event in the next 14 days
+  VOLUME SPIKE  -- today's volume vs 20-day average (most predictive signal)
+  MOMENTUM      -- 3-day price change already building
+  INTRADAY      -- stock already moving today vs yesterday close
+  SHORT SQUEEZE -- high short % -> squeeze fuel
+  FDA PROXIMITY -- event in the next 14 days
+
+Day-trade mode (0-2 days to event):
+  - Volume spike threshold: x1.5 (vs x2.0 for swing)
+  - BUY threshold: 38 (vs 45 for swing)
+  - Intraday momentum component added (15% weight)
+  - Proximity weight boosted to 25%
 
 Triggered for any FdaEvent ticker that fails the options-based approach.
 Also accepts tickers discovered via the EDGAR 8-K scanner.
@@ -19,30 +26,47 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Thresholds
-MIN_VOLUME_SPIKE  = 2.0    # today volume / 20-day avg (must be at least 2x)
-MIN_MOMENTUM_PCT  = 5.0    # 3-day price change > 5% (pre-move building)
+MIN_VOLUME_SPIKE_SWING = 2.0    # today volume / 20-day avg (swing trades, 3-14d)
+MIN_VOLUME_SPIKE_DAY   = 1.5    # lower bar when event is 0-2 days away
 MAX_PRICE         = 5.0    # only for stocks < $5 (options-viable excluded)
 MIN_PRICE         = 0.005  # ignore sub-penny stocks (untradeable)
-MIN_VOLUME_ABS    = 100_000  # at least 100K shares today (avoid dead stocks)
-SCORE_BUY_THRESHOLD = 45   # composite score to trigger BUY alert
+MIN_VOLUME_ABS    = 50_000   # at least 50K shares today (lowered from 100K)
+SCORE_BUY_THRESHOLD     = 45   # composite score -> BUY (swing, 3-14d)
+SCORE_BUY_THRESHOLD_DAY = 38   # composite score -> BUY (day trade, 0-2d)
 
 
-def _volume_score(spike_ratio: float) -> float:
-    """Score 0-100. 2x = 11, 5x = 44, 10x = 100."""
-    if spike_ratio < 2:
+def _volume_score(spike_ratio: float, is_day_trade: bool = False) -> float:
+    """
+    Score 0-100.
+    Swing: 2x=11, 5x=44, 10x=100
+    Day:   1.5x=6,  4x=44, 10x=100 (shifted floor)
+    """
+    floor = 1.5 if is_day_trade else 2.0
+    if spike_ratio < floor:
         return 0.0
-    return min(100.0, (spike_ratio - 1) / 9 * 100)
+    return min(100.0, (spike_ratio - floor) / (10.0 - floor) * 100)
 
 
 def _momentum_score(change_pct: float) -> float:
-    """Score 0-100. 5% = 25, 20% = 100."""
+    """Score 0-100. 5%=25, 20%=100."""
     if change_pct <= 0:
         return 0.0
     return min(100.0, change_pct / 20 * 100)
 
 
+def _intraday_score(change_pct_today: float) -> float:
+    """
+    Score 0-100 for same-day price move vs yesterday close.
+    Stock already running today = market is positioning before event.
+    2%=13, 5%=33, 15%=100
+    """
+    if change_pct_today <= 0:
+        return 0.0
+    return min(100.0, change_pct_today / 15 * 100)
+
+
 def _squeeze_score(short_pct: float) -> float:
-    """Score 0-100. 15% short = 38, 40% short = 100."""
+    """Score 0-100. 15% short=38, 40% short=100."""
     return min(100.0, short_pct / 40 * 100)
 
 
@@ -51,11 +75,13 @@ def _proximity_score(days_until: int) -> float:
     if days_until < 0:
         return 0.0
     if days_until <= 1:
-        return 90.0
-    if days_until <= 3:
         return 100.0
+    if days_until == 2:
+        return 95.0
+    if days_until <= 3:
+        return 85.0
     if days_until <= 7:
-        return 75.0
+        return 70.0
     if days_until <= 14:
         return 40.0
     return 10.0
@@ -75,6 +101,8 @@ def scan_penny_ticker(
     """
     Analyze one penny/micro-cap ticker for pre-catalyst volume spike.
     Returns a signal dict if BUY criteria met, else None.
+
+    Day-trade mode activates automatically when event is 0-2 days away.
     """
     try:
         import yfinance as yf
@@ -108,6 +136,13 @@ def scan_penny_ticker(
         price_3d_ago = hist["Close"].iloc[-4] if len(hist) >= 4 else hist["Close"].iloc[0]
         momentum_pct = ((price - price_3d_ago) / price_3d_ago * 100) if price_3d_ago > 0 else 0
 
+        # Intraday: today vs yesterday close (already moving today?)
+        yesterday_close = hist["Close"].iloc[-2] if len(hist) >= 2 else None
+        intraday_pct = (
+            (price - yesterday_close) / yesterday_close * 100
+            if yesterday_close and yesterday_close > 0 else 0
+        )
+
         # Short interest
         short_pct = (info.get("shortPercentOfFloat") or 0) * 100
 
@@ -122,56 +157,74 @@ def scan_penny_ticker(
         # Days to FDA event
         days_until = (event_date - date.today()).days if event_date else 30
 
-        # ── Composite score (weights sum to 100) ──────────────────────────────
-        w_vol   = 40   # volume spike is the strongest predictor
-        w_mom   = 25   # momentum means move already starting
-        w_sqz   = 15   # short squeeze adds fuel
-        w_prox  = 15   # event proximity
-        w_news  = 5    # news coverage
+        # --- Day-trade vs swing mode ---
+        is_day_trade = days_until <= 2
+        min_spike = MIN_VOLUME_SPIKE_DAY if is_day_trade else MIN_VOLUME_SPIKE_SWING
+        threshold = SCORE_BUY_THRESHOLD_DAY if is_day_trade else SCORE_BUY_THRESHOLD
 
-        s_vol  = _volume_score(volume_spike)
-        s_mom  = _momentum_score(momentum_pct)
-        s_sqz  = _squeeze_score(short_pct)
-        s_prox = _proximity_score(days_until)
-        s_news = _news_score(news_3d)
-
-        composite = (
-            s_vol  * (w_vol  / 100) +
-            s_mom  * (w_mom  / 100) +
-            s_sqz  * (w_sqz  / 100) +
-            s_prox * (w_prox / 100) +
-            s_news * (w_news / 100)
-        )
-
-        if composite < SCORE_BUY_THRESHOLD:
+        # Hard volume floor — exception: if stock already moving 5%+ today AND event tomorrow
+        if volume_spike < min_spike and not (is_day_trade and intraday_pct >= 5.0):
             logger.debug(
-                f"Penny scan {ticker}: score={composite:.1f} vol_spike={volume_spike:.1f}x "
-                f"mom={momentum_pct:.1f}% — below threshold"
+                f"Penny scan {ticker}: vol_spike={volume_spike:.1f}x < {min_spike}x min — skip"
             )
             return None
 
-        # ── Build signal ──────────────────────────────────────────────────────
+        # ---- Component scores -----------------------------------------------
+        s_vol   = _volume_score(volume_spike, is_day_trade)
+        s_mom   = _momentum_score(momentum_pct)
+        s_intra = _intraday_score(intraday_pct)
+        s_sqz   = _squeeze_score(short_pct)
+        s_prox  = _proximity_score(days_until)
+        s_news  = _news_score(news_3d)
+
+        # ---- Weights (sum to 100) -------------------------------------------
+        if is_day_trade:
+            # Day trade: proximity and intraday momentum get extra weight
+            w_vol, w_mom, w_intra, w_sqz, w_prox, w_news = 30, 15, 15, 10, 25, 5
+        else:
+            # Swing: volume spike is dominant, no intraday component
+            w_vol, w_mom, w_intra, w_sqz, w_prox, w_news = 40, 25,  0, 15, 15, 5
+
+        composite = (
+            s_vol   * (w_vol   / 100) +
+            s_mom   * (w_mom   / 100) +
+            s_intra * (w_intra / 100) +
+            s_sqz   * (w_sqz   / 100) +
+            s_prox  * (w_prox  / 100) +
+            s_news  * (w_news  / 100)
+        )
+
+        if composite < threshold:
+            logger.debug(
+                f"Penny scan {ticker}: score={composite:.1f} (need {threshold}) "
+                f"vol={volume_spike:.1f}x mom={momentum_pct:.1f}% intra={intraday_pct:.1f}% -- skip"
+            )
+            return None
+
+        # ---- Build signal reasons -------------------------------------------
         reasons = []
         if volume_spike >= 5:
-            reasons.append(f"נפח ×{volume_spike:.0f} מעל הממוצע")
-        elif volume_spike >= 2:
-            reasons.append(f"נפח ×{volume_spike:.1f} מעל הממוצע")
+            reasons.append(f"נפח x{volume_spike:.0f} מעל ממוצע")
+        elif volume_spike >= min_spike:
+            reasons.append(f"נפח x{volume_spike:.1f} מעל ממוצע")
 
-        if momentum_pct >= 5:
+        if intraday_pct >= 3:
+            reasons.append(f"כבר עולה +{intraday_pct:.1f}% היום")
+        elif momentum_pct >= 5:
             reasons.append(f"מומנטום +{momentum_pct:.1f}% ב-3 ימים")
 
         if short_pct >= 20:
-            reasons.append(f"שורט גבוה {short_pct:.0f}% — פוטנציאל סקוויז")
+            reasons.append(f"שורט גבוה {short_pct:.0f}% -- פוטנציאל סקוויז")
 
-        if days_until <= 3:
-            reasons.append(f"FDA בעוד {days_until} ימים בלבד")
+        if days_until <= 2:
+            reasons.append(f"FDA בעוד {days_until} ימים")
         elif days_until <= 7:
             reasons.append(f"FDA בעוד {days_until} ימים")
 
         if news_3d >= 2:
             reasons.append(f"{news_3d} ידיעות ב-3 ימים")
 
-        # Risk qualifier — penny stocks have high binary risk
+        # Risk qualifier
         risk_level = "HIGH" if market_cap < 10_000_000 else "MEDIUM"
         position_advice = "גודל פוזיציה קטן בלבד (0.5%-1%)" if risk_level == "HIGH" else "גודל פוזיציה מוגבל (1%-2%)"
 
@@ -189,17 +242,20 @@ def scan_penny_ticker(
             "volume_spike":    round(volume_spike, 1),
             "volume_today":    int(today_vol),
             "momentum_3d_pct": round(momentum_pct, 1),
+            "intraday_pct":    round(intraday_pct, 1),
             "short_pct":       round(short_pct, 1),
             "news_count_3d":   news_3d,
+            "is_day_trade":    is_day_trade,
             "reason":          " | ".join(reasons),
             "risk_level":      risk_level,
             "position_advice": position_advice,
             "component_scores": {
-                "volume":    round(s_vol,  1),
-                "momentum":  round(s_mom,  1),
-                "squeeze":   round(s_sqz,  1),
-                "proximity": round(s_prox, 1),
-                "news":      round(s_news, 1),
+                "volume":    round(s_vol,   1),
+                "momentum":  round(s_mom,   1),
+                "intraday":  round(s_intra, 1),
+                "squeeze":   round(s_sqz,   1),
+                "proximity": round(s_prox,  1),
+                "news":      round(s_news,  1),
             },
         }
 

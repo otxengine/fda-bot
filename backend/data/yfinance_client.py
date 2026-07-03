@@ -102,6 +102,29 @@ class YFinanceClient:
             logger.debug(f"get_earnings_date error for {ticker}: {e}")
             return None
 
+    def get_today_change_pct(self, ticker: str) -> float:
+        """
+        Return today price change % vs yesterday close.
+        Fast: uses regularMarketChangePercent from yfinance info.
+        Returns 0.0 on error.
+        """
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            chg = info.get("regularMarketChangePercent")
+            if chg is not None:
+                return round(float(chg), 2)
+            hist = stock.history(period="2d")
+            if len(hist) >= 2:
+                prev_close = hist["Close"].iloc[-2]
+                cur_price  = hist["Close"].iloc[-1]
+                if prev_close > 0:
+                    return round((cur_price - prev_close) / prev_close * 100, 2)
+            return 0.0
+        except Exception as e:
+            logger.debug(f"get_today_change_pct error {ticker}: {e}")
+            return 0.0
+
     def get_options_by_expiry(self, ticker: str, max_expirations: int = 8) -> dict:
         """
         Returns per-expiry options data for use in ExpirationAnalyzer.

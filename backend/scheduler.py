@@ -172,6 +172,9 @@ def run_realtime_scan(days_window: int = 7):
                 "analyst_bullish":   result.get("analyst_bullish"),
                 "squeeze_setup":     result.get("squeeze_setup"),
                 "binary_event_risk": result.get("binary_event_risk", 0),
+                "trade_type":        result.get("trade_type"),
+                "already_moving":    result.get("already_moving", False),
+                "today_change_pct":  result.get("today_change_pct", 0),
                 # Penny-specific extras
                 "_scan_path":        scan_path,
                 "_volume_spike":     result.get("_volume_spike"),
@@ -848,38 +851,160 @@ def _notify_penny_signals(signals: list):
             news_n  = sig.get("news_count_3d", 0)
             event_dt = sig.get("event_date", "")
 
-            risk_emoji = "🔥" if risk == "HIGH" else "⚠️"
-            mom_str = f"+{mom:.1f}%" if mom >= 0 else f"{mom:.1f}%"
-            news_str = f" | {news_n} ידיעות" if news_n > 0 else ""
-            short_str = f" | שורט {short:.0f}% 🔥" if short >= 20 else ""
+            risk_emoji   = "🔥" if risk == "HIGH" else "⚠️"
+            is_day_trade = sig.get("is_day_trade", isinstance(days, int) and days <= 2)
+            label        = "⚡ יום-עסקה" if is_day_trade else "🟢 קנייה"
+            exit_note    = "🚪 <b>צא בו ביום לפני/בשעת האירוע</b>" if is_day_trade else "🚪 <b>יציאה יום לפני האירוע</b>"
+            mom_str      = f"+{mom:.1f}%" if mom >= 0 else f"{mom:.1f}%"
+            news_str     = f" | {news_n} ידיעות" if news_n > 0 else ""
+            short_str    = f" | שורט {short:.0f}% 🔥" if short >= 20 else ""
+            intraday_pct = sig.get("intraday_pct", 0)
+            intraday_ln  = f"<b>עלייה היום:</b>  +{intraday_pct:.1f}%" + chr(10) if intraday_pct >= 2 else ""
+            price_str    = f"${price:.4f}" if price < 1 else f"${price:.2f}"
+            short_ln     = (f"<b>שורט:</b>        {short:.0f}%{short_str}" + chr(10)) if short >= 10 else ""
 
-            tg_text = (
-                f"🟢 <b>קנייה: מיקרו-קאפ — {ticker}</b>\n"
-                f"<i>{sig.get('company','')}</i>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>מחיר:</b>        ${price:.4f}\n"
-                f"<b>נפח יומי:</b>    ×{spike:.1f} מעל ממוצע\n"
-                f"<b>מומנטום 3י׳:</b>  {mom_str}{news_str}\n"
-                f"{f'<b>שורט:</b>        {short:.0f}%{short_str}{chr(10)}' if short >= 10 else ''}"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>אירוע FDA:</b>   {sig.get('event_type','FDA')} ({event_dt})\n"
-                f"<b>ימים לאירוע:</b> {days}\n"
-                f"<b>ציון:</b>        {score:.0f}/100\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
-                f"{risk_emoji} <b>סיכון {risk}</b> — {advice}\n"
-                f"⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>\n"
-                f"🚪 <b>יציאה: יום לפני האירוע — לא להחזיק דרך ה-FDA</b>"
-            )
+            tg_parts = [
+                label + " — <b>" + ticker + "</b>",
+                "<i>" + (sig.get("company") or "") + "</i>",
+                "━━━━━━━━━━━━━━━━━━",
+                "<b>מחיר:</b>        " + price_str,
+            ]
+            if intraday_pct >= 2:
+                tg_parts.append("<b>עלייה היום:</b>  +" + f"{intraday_pct:.1f}%")
+            tg_parts += [
+                f"<b>נפח יומי:</b>    x{spike:.1f} מעל ממוצע",
+                f"<b>מומנטום 3י':</b>  {mom_str}{news_str}",
+            ]
+            if short >= 10:
+                tg_parts.append(f"<b>שורט:</b>        {short:.0f}%{short_str}")
+            tg_parts += [
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>אירוע FDA:</b>   {sig.get('event_type','FDA')} ({event_dt})",
+                f"<b>ימים לאירוע:</b> {days}",
+                f"<b>ציון:</b>        {score:.0f}/100",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>סיבה:</b> {sig.get('reason','')}",
+                "",
+                f"{risk_emoji} <b>סיכון {risk}</b> — {advice}",
+                "⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>",
+                exit_note,
+            ]
+            tg_text = chr(10).join(tg_parts)
+            label_plain = "DAY" if is_day_trade else "PENNY"
             plain = (
-                f"PENNY BUY {ticker} ${price:.4f} | vol×{spike:.1f} | "
+                f"{label_plain} BUY {ticker} {price_str} | vol x{spike:.1f} | "
                 f"mom{mom_str} | FDA in {days}d | score {score:.0f}"
             )
             send_alert("penny_catalyst", ticker, plain, telegram_text=tg_text)
-            logger.info(f"Penny BUY alert: {ticker} ${price:.4f} vol×{spike:.1f} score={score:.0f}")
+            logger.info(f"Penny BUY alert: {ticker} {price_str} vol x{spike:.1f} score={score:.0f}")
+            logger.info(f"Penny BUY alert: {ticker} {price_str} vol x{spike:.1f} score={score:.0f}")
+            logger.info(f"Penny BUY alert: {ticker} {price_str} vol×{spike:.1f} score={score:.0f}")
 
     except Exception as e:
         logger.error(f"_notify_penny_signals failed: {e}")
+
+
+
+def run_already_moving_scan():
+    """
+    Lightweight scan every 10 min during market hours.
+    Detects stocks that are ALREADY running today (up 4%+) with FDA event in 0-3 days.
+    This pattern (GALT, NVCR, SYRA) is the strongest day-trade signal:
+    the market is positioning before the event -- join before retail catches on.
+    """
+    try:
+        import yfinance as yf
+        from datetime import date, timedelta, datetime
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, AlertLog
+        from backend.signals.alerter import send_alert
+
+        db = SessionLocal()
+        today = date.today()
+        cutoff = today + timedelta(days=3)
+
+        events = db.query(FdaEvent).filter(
+            FdaEvent.event_date >= today,
+            FdaEvent.event_date <= cutoff,
+            FdaEvent.ticker.isnot(None),
+        ).all()
+
+        if not events:
+            db.close()
+            return
+
+        seen = {}
+        for e in sorted(events, key=lambda x: x.event_date):
+            if e.ticker not in seen:
+                seen[e.ticker] = e
+        unique_events = list(seen.values())
+
+        cooldown_cutoff = datetime.utcnow() - timedelta(hours=3)
+        alerts_sent = 0
+
+        for event in unique_events:
+            ticker = event.ticker
+            try:
+                info = yf.Ticker(ticker).info
+                chg_pct = info.get("regularMarketChangePercent") or 0
+                price   = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+                mktcap  = info.get("marketCap") or 0
+
+                if chg_pct < 4.0:
+                    continue
+
+                # Skip if already alerted recently
+                recent = db.query(AlertLog).filter(
+                    AlertLog.ticker == ticker,
+                    AlertLog.alert_type == "already_moving",
+                    AlertLog.triggered_at >= cooldown_cutoff,
+                ).first()
+                if recent:
+                    continue
+
+                days_until = (event.event_date - today).days
+                entry_str  = f"${price:.4f}" if price < 1 else f"${price:.2f}"
+
+                db.add(AlertLog(
+                    ticker=ticker,
+                    alert_type="already_moving",
+                    score_at_trigger=chg_pct,
+                    message=f"already-moving {ticker} +{chg_pct:.1f}% today | FDA in {days_until}d",
+                ))
+
+                tg_parts = [
+                    "📈 <b>כבר עולה לפני FDA — " + ticker + "</b>",
+                    "<i>" + (event.company or "") + "</i>",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"<b>עלייה היום:</b>   +{chg_pct:.1f}%",
+                    f"<b>מחיר כרגע:</b>   {entry_str}",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"<b>אירוע FDA:</b>   {event.event_type or 'FDA'} בעוד {days_until} ימים",
+                    f"<b>תרופה:</b>       {event.drug_name or '--'}",
+                    "━━━━━━━━━━━━━━━━━━",
+                    "השוק כבר נכנס לפוזיציה — הצטרף לפני שהמחיר ממשיך",
+                    "<b>סטופ לוס:</b> 5% מתחת לכניסה",
+                    "<b>יציאה:</b> יום לפני האירוע (אל תחזיק דרך ה-FDA)",
+                ]
+                tg_text = chr(10).join(tg_parts)
+                plain = f"MOVING {ticker} +{chg_pct:.1f}% today | FDA in {days_until}d"
+                send_alert("already_moving", ticker, plain, telegram_text=tg_text)
+                alerts_sent += 1
+
+            except Exception as inner_e:
+                logger.debug(f"Already-moving check {ticker}: {inner_e}")
+                continue
+
+        db.commit()
+        db.close()
+
+        if alerts_sent:
+            logger.info(f"Already-moving scan: {alerts_sent} alerts sent")
+        else:
+            logger.debug("Already-moving scan: no stocks up 4%+ with imminent FDA event")
+
+    except Exception as e:
+        logger.error(f"run_already_moving_scan failed: {e}")
 
 
 def run_edgar_scan():
@@ -1226,6 +1351,24 @@ def create_scheduler() -> BackgroundScheduler:
         ),
         id="penny_scan",
         name="Penny Catalyst Scan (2x daily)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── ALREADY-MOVING SCAN: every 10 min, Mon-Fri 9:30-15:30 EST ───────────
+    # Detects stocks already up 4%+ today with FDA event in 0-3 days.
+    # This is the strongest day-trade signal: market is positioning before event.
+    scheduler.add_job(
+        run_already_moving_scan,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="*/10",
+            timezone=EST,
+        ),
+        id="already_moving_scan",
+        name="Already-Moving FDA Scan (10min)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

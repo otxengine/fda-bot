@@ -277,6 +277,27 @@ def analyze_ticker(
                 "orange" if scores["composite_score"] >= THRESHOLD_ORANGE else "green"
             )
 
+    # ── Already-moving bonus: stock already running today before event ────────
+    # Lesson from examples (GALT, NVCR, SYRA): when the market is already
+    # positioning (stock up 3%+ today) AND event is 0-3 days away, that IS
+    # a legitimate signal — boost composite and flag it.
+    today_change_pct = 0.0
+    already_moving = False
+    try:
+        today_change_pct = yfinance_client.get_today_change_pct(ticker)
+        already_moving = (today_change_pct >= 3.0 and event_date is not None
+                          and 0 <= days_until <= 3)
+        if already_moving:
+            # Bonus: up to +10 pts (caps at 100). +5 at 3%, +10 at 10%+
+            bonus = min(10.0, today_change_pct / 10 * 10)
+            new_score = min(100.0, scores["composite_score"] + bonus)
+            scores = {**scores, "composite_score": round(new_score, 1)}
+            logger.info(
+                f"{ticker} already-moving bonus: +{bonus:.1f}pts "                f"({today_change_pct:+.1f}% today, {days_until}d to event)"
+            )
+    except Exception as e:
+        logger.debug(f"already-moving check error {ticker}: {e}")
+
     # ── Probability calibration ───────────────────────────────────────────────
     prob = {"p_up_5": None, "p_up_10": None, "p_down_5": None, "p_down_10": None,
             "p_calibration_n": 0, "p_confidence": "low"}
@@ -393,6 +414,8 @@ def analyze_ticker(
 
         # High C/P override: exceptional call flow overrides score threshold
         high_cp_override = cp_val >= 5.0 and score_val >= 35
+        # Already-moving override: stock up 5%+ today AND event 0-1 days away
+        moving_override = already_moving and today_change_pct >= 5.0 and days_until <= 1
         # BUY criteria
         standard_buy = score_val >= score_threshold and cp_val >= cp_threshold
         # Penny stock: price < $0.50 — options flow unreliable
@@ -404,12 +427,14 @@ def analyze_ticker(
             entry_price_val = None
             stop_loss_price_val = None
 
-        elif (standard_buy or high_cp_override) and not liquidity_warning:
+        elif (standard_buy or high_cp_override or moving_override) and not liquidity_warning:
             stock_signal = "BUY"
             reasons = []
             if trade_type == "day":
                 reasons.append(f"יום-עסקה ({days_until}d לאירוע)")
-            if high_cp_override and not standard_buy:
+            if moving_override and not standard_buy:
+                reasons.append(f"כבר עולה +{today_change_pct:.1f}% היום לפני FDA")
+            elif high_cp_override and not standard_buy:
                 reasons.append(f"זרימת קול יוצאת דופן (C/P {cp_val:.1f})")
             elif score_val >= 65:
                 reasons.append(f"signal חזק ({score_val:.0f})")
@@ -522,6 +547,9 @@ def analyze_ticker(
         "clinical_score":     (fund_result.get("fundamental_detail") or {}).get("clinical_score"),
         "trial_risk":         int(fund_result["fundamental_flags"].get("trial_risk", False)),
         "strong_trial":       int(fund_result["fundamental_flags"].get("strong_trial", False)),
+        # already-moving
+        "already_moving":      already_moving,
+        "today_change_pct":    round(today_change_pct, 1),
         # learning engine
         "_neg_penalty":       neg_penalty,
         "_neg_reason":        neg_reason,
