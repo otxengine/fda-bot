@@ -84,6 +84,7 @@ class OptionsSignal(Base):
     stop_loss_price   = Column(Float, nullable=True)    # entry × 0.92
     target_date       = Column(String, nullable=True)   # event_date - 1 day ISO
     binary_event_risk = Column(Integer, default=0)      # small-cap + event ≤3d ahead
+    trade_type        = Column(String,  nullable=True)  # "day" (0-2d) | "swing" (3-7d)
 
     # Fundamental analysis
     fundamental_score = Column(Float, nullable=True)    # 0-100

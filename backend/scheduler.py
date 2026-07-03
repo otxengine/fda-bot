@@ -318,19 +318,25 @@ def _notify_stock_buy_signals(signals: list):
             stop_str  = f"${stop:.4f}" if stop and stop < 1 else (f"${stop:.2f}" if stop else "N/A")
             risk_pct  = f"{((stop-entry)/entry*100):.1f}%" if entry and stop else "—"
 
+            days    = sig.get("days_until", "?")
+            ttype   = sig.get("trade_type") or ("day" if isinstance(days, int) and days <= 2 else "swing")
+            is_day  = (ttype == "day")
+
             if scan_path == "penny":
                 # ── Penny / volume-spike path ─────────────────────────────────
                 spike   = sig.get("_volume_spike") or 0
                 mom     = sig.get("_momentum_3d") or 0
                 short   = sig.get("_short_pct") or 0
                 risk    = sig.get("_risk_level", "HIGH")
-                advice  = sig.get("_position_advice", "גודל פוזיציה קטן בלבד (0.5%)")
+                advice  = sig.get("_position_advice", "גודל פוזיציה קטן (0.5%)")
                 risk_emoji = "🔥" if risk == "HIGH" else "⚠️"
                 mom_str = f"+{mom:.1f}%" if mom >= 0 else f"{mom:.1f}%"
                 short_line = f"<b>שורט:</b>        {short:.0f}% 🔥\n" if short >= 20 else ""
+                label  = "⚡ יום-עסקה" if is_day else "🟢 קנייה"
+                exit_note = "🚪 <b>צא בו ביום לפני/בשעת האירוע</b>" if is_day else "🚪 <b>צא יום לפני ה-FDA</b>"
 
                 tg_text = (
-                    f"🟢 <b>קנייה — {ticker}</b>\n"
+                    f"{label} — <b>{ticker}</b>\n"
                     f"<i>{sig.get('company','')}</i>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"<b>כניסה:</b>       {entry_str}\n"
@@ -342,40 +348,45 @@ def _notify_stock_buy_signals(signals: list):
                     f"{short_line}"
                     f"<b>ציון:</b>        {score:.0f}/100\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {days} ימים\n"
                     f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
                     f"{risk_emoji} <b>סיכון {risk}</b> — {advice}\n"
                     f"⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>\n"
-                    f"🚪 <b>צא יום לפני ה-FDA</b>"
+                    f"{exit_note}"
                 )
-                plain = f"BUY {ticker} @ {entry_str} vol×{spike:.1f} mom{mom_str} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
+                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} vol×{spike:.1f} | FDA in {days}d | score {score:.0f}"
 
             else:
                 # ── Options-flow path ─────────────────────────────────────────
-                em   = sig.get("expected_move")
-                cp   = sig.get("call_put_ratio") or 1.0
-                fund = sig.get("fundamental_score")
+                em       = sig.get("expected_move")
+                cp       = sig.get("call_put_ratio") or 1.0
+                fund     = sig.get("fundamental_score")
                 clinical = sig.get("clinical_score")
 
                 target_val = entry * (1 + (em or 10) / 100) if entry and em else None
                 target_str = f"${target_val:.2f}" if target_val else "N/A"
-
-                direction = (
-                    (f"↑ +{em:.1f}%" if em else "↑ עלייה") if cp >= 2.0 else
-                    (f"↕ ±{em:.1f}%" if em else "↕ ניטרלי")
-                )
+                direction  = (f"↑ +{em:.1f}%" if em else "↑ עלייה") if cp >= 2.0 else (f"↕ ±{em:.1f}%" if em else "↕ ניטרלי")
 
                 flags = []
-                if sig.get("analyst_bullish"): flags.append("📊 אנליסטים חיוביים")
-                if sig.get("squeeze_setup"):   flags.append("🔥 שורט גבוה — squeeze")
-                if sig.get("binary_event_risk"): flags.append("⚠️ binary risk")
+                if sig.get("analyst_bullish"):   flags.append("📊 אנליסטים חיוביים")
+                if sig.get("squeeze_setup"):      flags.append("🔥 שורט גבוה")
+                if sig.get("binary_event_risk"):  flags.append("⚠️ binary risk")
                 flags_str = "\n" + " | ".join(flags) if flags else ""
 
                 fund_str = f"{fund:.0f}" if fund is not None else "—"
                 clin_str = f"{clinical:.0f}" if clinical is not None else "—"
 
+                if is_day:
+                    label     = "⚡ יום-עסקה"
+                    exit_note = "⚡ <b>יום-עסקה — צא בו ביום לפני/בשעת האירוע</b>"
+                    size_note = "גודל פוזיציה רגיל (stop 5%)"
+                else:
+                    label     = "🟢 קנייה"
+                    exit_note = "⚠️ <b>צא יום לפני ה-FDA</b> — לא להחזיק דרך ההחלטה"
+                    size_note = ""
+
                 tg_text = (
-                    f"🟢 <b>קנייה — {ticker}</b>\n"
+                    f"{label} — <b>{ticker}</b>\n"
                     f"<i>{sig.get('company','')}</i>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"<b>כניסה:</b>       {entry_str}\n"
@@ -383,21 +394,21 @@ def _notify_stock_buy_signals(signals: list):
                     f"<b>יעד מחיר:</b>    {target_str}\n"
                     f"<b>יציאה לפני:</b>  {target_date}\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>תחזית מניה:</b>  {direction}\n"
+                    f"<b>תחזית:</b>       {direction}\n"
                     f"<b>זרימת קול/פוט:</b> {cp:.1f}x\n"
                     f"<b>ציון כולל:</b>   {score:.0f}/100\n"
-                    f"<b>פונדמנטל:</b>    {fund_str}/100\n"
-                    f"<b>קליני:</b>       {clin_str}/100\n"
+                    f"<b>פונדמנטל:</b>    {fund_str}/100  <b>קליני:</b> {clin_str}/100\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {sig.get('days_until','?')} ימים\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {days} ימים\n"
                     f"<b>סיבה:</b> {sig.get('reason','')}"
                     f"{flags_str}\n\n"
-                    f"⚠️ <b>צא יום לפני ה-FDA</b> — לא להחזיק דרך ההחלטה"
+                    f"{exit_note}"
+                    + (f"\n{size_note}" if size_note else "")
                 )
-                plain = f"BUY {ticker} @ {entry_str} | FDA in {sig.get('days_until','?')}d | score {score:.0f}"
+                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} | C/P {cp:.1f} | FDA in {days}d | score {score:.0f}"
 
             send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
-            logger.info(f"BUY alert [{scan_path}]: {ticker} score={score:.0f}")
+            logger.info(f"{'DAY' if is_day else 'BUY'} alert [{scan_path}]: {ticker} score={score:.0f} days={days}")
 
     except Exception as e:
         logger.error(f"_notify_stock_buy_signals failed: {e}")

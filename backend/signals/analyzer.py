@@ -293,14 +293,16 @@ def analyze_ticker(
 
     # ── A2: Entry timing window ───────────────────────────────────────────────
     days_until = (event_date - date.today()).days if event_date else 999
-    if days_until >= 15:
-        entry_window = "early"
-    elif days_until >= 7:
-        entry_window = "optimal"
-    elif days_until >= 3:
-        entry_window = "late"
+    if days_until <= 2:
+        entry_window = "prime"       # best for 1-2 day catalyst trade
+    elif days_until <= 4:
+        entry_window = "optimal"     # good swing entry
+    elif days_until <= 7:
+        entry_window = "early"       # monitor, consider entry
+    elif days_until <= 14:
+        entry_window = "watch"       # too early to enter
     else:
-        entry_window = "avoid"
+        entry_window = "monitor"     # just tracking
 
     # ── A3: Liquidity gate + IV crush warning ─────────────────────────────────
     liquidity_warning = bool(total_volume < 100 or total_oi < 500)
@@ -340,9 +342,26 @@ def analyze_ticker(
     from datetime import timedelta
     stock_signal = "WATCH"
     stock_signal_reason = ""
+    trade_type = "swing"   # "day" for 0-2d, "swing" for 3-7d
+
+    # Stop loss: tighter for day trades (5%), standard for swing (8%)
+    if days_until <= 2:
+        trade_type = "day"
+        stop_loss_pct = 0.95    # 5% stop
+    else:
+        trade_type = "swing"
+        stop_loss_pct = 0.92    # 8% stop
+
     entry_price_val = stock_price if stock_price else None
-    stop_loss_price_val = round(stock_price * 0.92, 2) if stock_price else None
-    target_date_val = (event_date - timedelta(days=1)).isoformat() if event_date else None
+    stop_loss_price_val = round(stock_price * stop_loss_pct, 2) if stock_price else None
+    # Exit day before event for swing; same day / next morning for day trade
+    if event_date:
+        if days_until <= 1:
+            target_date_val = event_date.isoformat()          # exit day of event (pre-announcement)
+        else:
+            target_date_val = (event_date - timedelta(days=1)).isoformat()
+    else:
+        target_date_val = None
 
     # ── Binary event risk: market_cap < $100M with event in 0-3 days ─────────
     # These stocks have massive asymmetric moves but direction is unknowable.
@@ -362,11 +381,21 @@ def analyze_ticker(
         cp_val    = scores["call_put_ratio"]
         fv_val    = flow_velocity
 
+        # Thresholds differ by trade type
+        # Day trade (0-2d): lower score bar — proximity IS the edge
+        # Swing trade (3-7d): standard bar
+        if trade_type == "day":
+            score_threshold = 42
+            cp_threshold    = 1.5
+        else:
+            score_threshold = 50
+            cp_threshold    = 1.8
+
         # High C/P override: exceptional call flow overrides score threshold
-        high_cp_override = cp_val >= 5.0 and score_val >= 40
-        # Standard BUY: score≥50 + bullish flow
-        standard_buy = score_val >= 50 and cp_val >= 1.8
-        # Penny stock: price < $0.50 — options flow is unreliable, handled by penny scanner
+        high_cp_override = cp_val >= 5.0 and score_val >= 35
+        # BUY criteria
+        standard_buy = score_val >= score_threshold and cp_val >= cp_threshold
+        # Penny stock: price < $0.50 — options flow unreliable
         penny_stock = bool(stock_price and stock_price < 0.50)
 
         if penny_stock:
@@ -378,37 +407,39 @@ def analyze_ticker(
         elif (standard_buy or high_cp_override) and not liquidity_warning:
             stock_signal = "BUY"
             reasons = []
+            if trade_type == "day":
+                reasons.append(f"יום-עסקה ({days_until}d לאירוע)")
             if high_cp_override and not standard_buy:
-                reasons.append(f"exceptional call flow (C/P {cp_val:.1f})")
+                reasons.append(f"זרימת קול יוצאת דופן (C/P {cp_val:.1f})")
             elif score_val >= 65:
-                reasons.append(f"strong signal ({score_val:.0f})")
+                reasons.append(f"signal חזק ({score_val:.0f})")
             else:
                 reasons.append(f"signal score {score_val:.0f}")
             if cp_val >= 2.5:
                 reasons.append(f"bullish C/P {cp_val:.1f}")
             if fv_val > 30:
-                reasons.append(f"rising premium (+{fv_val:.0f}%)")
+                reasons.append(f"premium עולה (+{fv_val:.0f}%)")
             if exp_result["event_pinned_ratio"] > 0.5:
-                reasons.append("event-pinned options")
+                reasons.append("options נעוצות לאירוע")
             if binary_event_risk:
-                reasons.append("⚠️ binary event risk — size small")
+                reasons.append("⚠️ סיכון בינארי — גודל קטן")
             stock_signal_reason = " | ".join(reasons)
 
         elif (standard_buy or high_cp_override) and liquidity_warning:
             stock_signal = "WATCH"
-            stock_signal_reason = f"signal ok (score {score_val:.0f}, C/P {cp_val:.1f}) — low liquidity, size small"
+            stock_signal_reason = f"signal ok (score {score_val:.0f}, C/P {cp_val:.1f}) — נזילות נמוכה"
 
-        elif score_val >= 38 and cp_val >= 1.3 and not liquidity_warning:
+        elif score_val >= 35 and cp_val >= 1.3 and not liquidity_warning:
             stock_signal = "WATCH"
-            stock_signal_reason = f"moderate signal — wait for stronger flow (score {score_val:.0f})"
+            stock_signal_reason = f"signal בינוני — המתן לזרימה חזקה יותר (score {score_val:.0f})"
 
-        elif liquidity_warning and score_val < 40:
+        elif liquidity_warning and score_val < 38:
             stock_signal = "AVOID"
-            stock_signal_reason = "low liquidity + weak signal"
+            stock_signal_reason = "נזילות נמוכה + signal חלש"
 
-        elif iv_crush_warning and score_val < 40:
+        elif iv_crush_warning and score_val < 38:
             stock_signal = "AVOID"
-            stock_signal_reason = "IV overpriced with weak directional signal"
+            stock_signal_reason = "IV יקר עם signal כיווני חלש"
     else:
         # Outside 0-7 day window — monitoring only
         stock_signal = "WATCH"
@@ -482,6 +513,7 @@ def analyze_ticker(
         "stop_loss_price":      stop_loss_price_val,
         "target_date":          target_date_val,
         "binary_event_risk":    int(binary_event_risk),
+        "trade_type":           trade_type,
         # fundamental
         "fundamental_score":  fund_result["fundamental_score"],
         "cash_warning":       int(fund_result["fundamental_flags"].get("cash_warning", False)),

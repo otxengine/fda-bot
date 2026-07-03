@@ -59,6 +59,7 @@ def migrate_db():
             ("stop_loss_price",           "FLOAT"),
             ("target_date",               "TEXT"),
             ("binary_event_risk",         "INTEGER DEFAULT 0"),
+            ("trade_type",                "TEXT"),
         ],
     }
 
