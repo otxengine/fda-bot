@@ -1,6 +1,10 @@
 """
 BiopharmCatalyst FDA Calendar scraper.
-Full API access: returns ALL upcoming FDA catalysts (hundreds of events).
+
+Public API returns the 10 most imminent upcoming catalysts (free tier limit).
+If BPC_SESSION env var is set (laravel_session cookie from logged-in browser),
+the scraper uses that session to unlock more events (up to 15 for free, unlimited for paid).
+
 Rich data: ticker, event_type, catalyst_date, drug_name, indication,
            market_cap, relative_volume, likelihood_of_approval.
 """
@@ -14,9 +18,8 @@ import requests
 logger = logging.getLogger(__name__)
 
 API_URL = "https://www.biopharmcatalyst.com/api/fda-calendar"
-# BPC public endpoint is limited to 10 near-term events.
-# The v1 REST API (full access) is at /api/v1/{endpoint} — endpoint name TBD from BPC docs.
-BPC_API_KEY = os.getenv("BPC_API_KEY", "bpc_f84d9b2ef66c6da19397e24a0833f921")
+BPC_SESSION = os.getenv("BPC_SESSION", "")       # laravel_session cookie value
+BPC_XSRF    = os.getenv("BPC_XSRF_TOKEN", "")   # XSRF-TOKEN cookie value
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
@@ -31,9 +34,19 @@ def scrape_biopharmcatalyst(include_all_phases: bool = True) -> list[dict]:
     """
     Fetch upcoming FDA catalysts from BiopharmCatalyst API.
     Returns list of event dicts compatible with FdaEvent model.
+
+    Free public API: 10 most imminent events per call.
+    With BPC_SESSION cookie set: up to 15 (free account) or unlimited (paid).
     """
     events = []
     today = date.today()
+
+    # Build optional session cookies (unlocks more events if logged in)
+    cookies = {}
+    if BPC_SESSION:
+        cookies["laravel_session"] = BPC_SESSION
+    if BPC_XSRF:
+        cookies["XSRF-TOKEN"] = BPC_XSRF
 
     try:
         # Fetch all pages
@@ -43,6 +56,7 @@ def scrape_biopharmcatalyst(include_all_phases: bool = True) -> list[dict]:
                 API_URL,
                 params={"page": page, "column": "catalyst_date", "direction": "asc"},
                 headers=HEADERS,
+                cookies=cookies if cookies else None,
                 timeout=15,
             )
             resp.raise_for_status()
@@ -85,7 +99,7 @@ def scrape_biopharmcatalyst(include_all_phases: bool = True) -> list[dict]:
                     "ticker":      ticker,
                     "company":     company_name,
                     "event_type":  label,
-                    "drug_name":   item.get("name"),
+                    "drug_name":   item.get("drug_name") or item.get("name"),
                     "indication":  item.get("indication"),
                     "event_date":  cat_date,
                     "source":      "biopharmcatalyst",

@@ -115,30 +115,27 @@ def _scrape_clinicaltrials_completing(days_forward: int = 90) -> list[dict]:
         r = requests.get(
             "https://clinicaltrials.gov/api/v2/studies",
             params={
-                "filter.advanced": (
-                    f"AREA[PrimaryCompletionDate]RANGE[{today.isoformat()},{end_date.isoformat()}]"
-                    " AND AREA[Phase]COVER[PHASE3 PHASE2]"
-                    " AND AREA[StudyType]COVER[INTERVENTIONAL]"
-                ),
-                "fields": "NCTId,BriefTitle,LeadSponsorName,PrimaryCompletionDate,Phase,OverallStatus",
-                "pageSize": 100,
-                "sort": "PrimaryCompletionDate:asc",
+                "query.term":           "cancer OR autoimmune OR oncology OR rare disease",
+                "filter.overallStatus":  "ACTIVE_NOT_RECRUITING",
+                "fields":               "NCTId,BriefTitle,LeadSponsorName,PrimaryCompletionDate,Phase",
+                "pageSize":             200,
             },
-            headers=HEADERS,
-            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 fda-scanner/1.0 research@example.com"},
+            timeout=20,
         )
         if not r.ok:
             return events
 
         studies = r.json().get("studies", [])
         for s in studies:
-            proto = s.get("protocolSection", {})
-            ident = proto.get("identificationModule", {})
-            status = proto.get("statusModule", {})
+            proto   = s.get("protocolSection", {})
+            ident   = proto.get("identificationModule", {})
+            status  = proto.get("statusModule", {})
             sponsor = proto.get("sponsorCollaboratorsModule", {})
 
-            overall_status = status.get("overallStatus", "")
-            if overall_status not in ("RECRUITING", "ACTIVE_NOT_RECRUITING", "ENROLLING_BY_INVITATION"):
+            # Only Phase 2/3 or Phase 3
+            phases = proto.get("designModule", {}).get("phases", [])
+            if not any(p in phases for p in ["PHASE3", "PHASE2_PHASE3", "PHASE2"]):
                 continue
 
             completion_str = status.get("primaryCompletionDateStruct", {}).get("date", "")
@@ -146,7 +143,6 @@ def _scrape_clinicaltrials_completing(days_forward: int = 90) -> list[dict]:
                 continue
 
             try:
-                # ClinicalTrials dates: "2026-08-15" or "2026-08"
                 if len(completion_str) == 7:  # YYYY-MM
                     completion_str += "-15"
                 event_date = date.fromisoformat(completion_str)
@@ -160,12 +156,11 @@ def _scrape_clinicaltrials_completing(days_forward: int = 90) -> list[dict]:
             ticker = _guess_ticker(sponsor_name)
 
             title = ident.get("briefTitle", "")
-            phase = proto.get("designModule", {}).get("phases", [""])[0]
-
+            phase = phases[0] if phases else ""
             phase_label = {
                 "PHASE3": "Phase 3", "PHASE2": "Phase 2",
                 "PHASE2_PHASE3": "Phase 2/3", "PHASE4": "Phase 4",
-            }.get(phase.replace(" ", "").upper(), phase)
+            }.get(phase, phase)
 
             events.append({
                 "ticker":     ticker,

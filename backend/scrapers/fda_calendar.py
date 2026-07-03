@@ -1,20 +1,24 @@
 """
 FDA calendar scraper.
-FDA.gov advisory calendar is JS-rendered, so we use their public RSS feed
-and the drugs@FDA search page as alternatives.
-Primary data source is BiopharmaWatch (handled in biopharma.py).
-This module adds AdCom events from FDA RSS if available.
+
+Scrapes two sources for AdCom / PDUFA events:
+  1. FDA.gov advisory committee calendar (HTML)
+  2. OpenFDA API for recent NDA/BLA submissions with estimated PDUFA dates
+
+The old RSS feed /rss-feeds/advisory-committees/rss.xml is dead (404).
+Primary FDA catalyst data still comes from biopharmcatalyst.py and biopharma.py.
 """
 import re
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-FDA_RSS_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/advisory-committees/rss.xml"
+FDA_ADCOM_URL = "https://www.fda.gov/advisory-committees/advisory-committee-calendar"
+FDA_API_URL   = "https://api.fda.gov/drug/drugsfda.json"
 
 COMPANY_TICKER_MAP = {
     "pfizer": "PFE", "merck": "MRK", "johnson & johnson": "JNJ",
@@ -23,11 +27,14 @@ COMPANY_TICKER_MAP = {
     "regeneron": "REGN", "moderna": "MRNA", "biontech": "BNTX",
     "novavax": "NVAX", "vertex": "VRTX", "alnylam": "ALNY",
     "sarepta": "SRPT", "neurocrine": "NBIX", "jazz pharmaceuticals": "JAZZ",
-    "intercept": "ICPT", "seagen": "SGEN", "blueprint medicines": "BPMC",
-    "sage therapeutics": "SAGE", "inovio": "INO", "arctus": "RCUS",
-    "global blood": "GBT", "turning point": "TPTX", "acceleron": "XLRN",
-    "arena pharmaceuticals": "ARNA", "alexion": "ALXN",
+    "sage therapeutics": "SAGE", "inovio": "INO",
+    "global blood": "GBT", "blueprint medicines": "BPMC",
+    "ultragenyx": "RARE", "ionis": "IONS", "axsome": "AXSM",
+    "praxis": "PRAX", "acadia": "ACAD", "beam therapeutics": "BEAM",
+    "crispr therapeutics": "CRSP", "intellia": "NTLA",
 }
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 MONTH_MAP = {
     "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
@@ -37,87 +44,140 @@ MONTH_MAP = {
 }
 
 
-def guess_ticker(text: str) -> Optional[str]:
+def _guess_ticker(text: str) -> Optional[str]:
     text_lower = text.lower()
     for key, ticker in COMPANY_TICKER_MAP.items():
         if key in text_lower:
             return ticker
-    return None
+    m = re.search(r'\(([A-Z]{2,5})\)', text)
+    return m.group(1) if m else None
 
 
-def parse_date_from_text(text: str) -> Optional[date]:
+def _parse_date(text: str) -> Optional[date]:
     text = text.strip()
     for fmt in ["%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"]:
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             pass
-    match = re.search(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", text)
-    if match:
-        month_str, day_str, year_str = match.groups()
-        month = MONTH_MAP.get(month_str.lower())
+    m = re.search(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", text)
+    if m:
+        month = MONTH_MAP.get(m.group(1).lower())
         if month:
             try:
-                return date(int(year_str), month, int(day_str))
+                return date(int(m.group(3)), month, int(m.group(2)))
             except ValueError:
                 pass
     return None
 
 
-def scrape_fda_calendar() -> list[dict]:
+def _scrape_fda_adcom_page() -> list[dict]:
     """
-    Scrape FDA advisory committee events from FDA RSS feed.
-    Returns list of event dicts (may be empty if RSS yields nothing parseable).
+    Scrape FDA advisory committee calendar page for date mentions.
+    The page is JS-rendered so we extract any dates visible in the static HTML.
     """
     events = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
+    today = date.today()
     try:
-        response = requests.get(FDA_RSS_URL, headers=headers, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "xml")
+        resp = requests.get(FDA_ADCOM_URL, headers=HEADERS, timeout=20)
+        resp.raise_for_status()
+        text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
 
-        items = soup.find_all("item")
-        logger.info(f"FDA RSS: found {len(items)} items")
-
-        for item in items:
-            title = item.find("title")
-            pub_date = item.find("pubDate")
-            description = item.find("description")
-
-            title_text = title.get_text(strip=True) if title else ""
-            desc_text = description.get_text(strip=True) if description else ""
-            combined = f"{title_text} {desc_text}"
-
-            # Try to parse event date from title/description
-            event_date = None
-            if pub_date:
-                event_date = parse_date_from_text(pub_date.get_text(strip=True))
-            if not event_date:
-                event_date = parse_date_from_text(combined)
-            if not event_date:
+        date_pattern = re.compile(
+            r"((?:January|February|March|April|May|June|July|August|"
+            r"September|October|November|December)\s+\d{1,2},?\s*202\d)"
+        )
+        seen = set()
+        for m in date_pattern.finditer(text):
+            event_date = _parse_date(m.group(1))
+            if not event_date or event_date < today or event_date > today + timedelta(days=180):
                 continue
-            if event_date < date.today():
+            if event_date in seen:
                 continue
-
-            ticker = guess_ticker(combined)
-            ticker_match = re.search(r'\(([A-Z]{2,5})\)', combined)
-            if ticker_match:
-                ticker = ticker_match.group(1)
-
+            seen.add(event_date)
+            start = max(0, m.start() - 200)
+            context = text[start:m.end() + 200]
+            ticker = _guess_ticker(context)
             events.append({
                 "ticker":     ticker,
-                "company":    title_text[:100] or "FDA Advisory Committee",
+                "company":    "FDA Advisory Committee",
                 "event_type": "AdCom",
                 "drug_name":  None,
                 "indication": None,
                 "event_date": event_date,
-                "source":     "fda.gov/rss",
+                "source":     "fda.gov/adcom",
             })
-
-        logger.info(f"FDA RSS scraper: {len(events)} upcoming AdCom events")
-
+        logger.info(f"FDA AdCom page: {len(events)} upcoming dates")
     except Exception as e:
-        logger.warning(f"FDA RSS scrape failed ({e}) — relying on BiopharmaWatch only")
+        logger.warning(f"FDA AdCom page scrape failed: {e}")
+    return events
 
+
+def _scrape_openfda_upcoming() -> list[dict]:
+    """
+    OpenFDA: find NDA/BLA applications filed recently to estimate upcoming PDUFA dates.
+    """
+    events = []
+    today = date.today()
+    try:
+        from_date = (today - timedelta(days=120)).strftime("%Y%m%d")
+        to_date   = today.strftime("%Y%m%d")
+        resp = requests.get(
+            FDA_API_URL,
+            params={
+                "search": f"submissions.submission_type:ORIG+AND+submissions.submission_status_date:[{from_date}+TO+{to_date}]",
+                "limit": 100,
+                "sort": "submissions.submission_status_date:desc",
+            },
+            headers=HEADERS,
+            timeout=20,
+        )
+        if not resp.ok:
+            return events
+        results = resp.json().get("results", [])
+        for drug in results:
+            sponsor = drug.get("sponsor_name", "")
+            ticker  = _guess_ticker(sponsor)
+            products = drug.get("products", [{}])
+            brand = products[0].get("brand_name", "") if products else ""
+            for sub in drug.get("submissions", []):
+                if sub.get("submission_type") != "ORIG":
+                    continue
+                filed_str = sub.get("submission_status_date", "")
+                if not filed_str or len(filed_str) < 8:
+                    continue
+                try:
+                    filed = date(int(filed_str[:4]), int(filed_str[4:6]), int(filed_str[6:8]))
+                except ValueError:
+                    continue
+                priority = sub.get("review_priority", "") == "PRIORITY"
+                months = 6 if priority else 10
+                yr  = filed.year + (filed.month + months - 1) // 12
+                mon = (filed.month + months - 1) % 12 + 1
+                try:
+                    est_pdufa = date(yr, mon, filed.day)
+                except ValueError:
+                    continue
+                if est_pdufa < today or est_pdufa > today + timedelta(days=180):
+                    continue
+                events.append({
+                    "ticker":     ticker,
+                    "company":    sponsor,
+                    "event_type": "PDUFA (est.)",
+                    "drug_name":  brand or None,
+                    "indication": None,
+                    "event_date": est_pdufa,
+                    "source":     "openfda/nda",
+                })
+                break
+        logger.info(f"OpenFDA: {len(events)} estimated PDUFA dates")
+    except Exception as e:
+        logger.warning(f"OpenFDA PDUFA estimation failed: {e}")
+    return events
+
+
+def scrape_fda_calendar() -> list[dict]:
+    """Aggregate FDA events from AdCom page + OpenFDA NDA submissions."""
+    events = _scrape_fda_adcom_page() + _scrape_openfda_upcoming()
+    logger.info(f"FDA calendar total: {len(events)} events")
     return events
