@@ -63,6 +63,27 @@ def run_fda_scrape():
                     FdaEvent.company == event_data["company"],
                 ).first()
 
+            # BPC fields to persist (available on all sources that set them)
+            bpc_fields = {
+                "bpc_price":         event_data.get("bpc_price"),
+                "bpc_change_pct":    event_data.get("bpc_change_pct"),
+                "bpc_rel_volume":    event_data.get("bpc_rel_volume"),
+                "bpc_volume":        event_data.get("bpc_volume"),
+                "bpc_avg_volume":    event_data.get("bpc_avg_volume"),
+                "bpc_optionable":    event_data.get("bpc_optionable"),
+                "bpc_market_cap":    event_data.get("bpc_market_cap"),
+                "bpc_insider_pct":   event_data.get("bpc_insider_pct"),
+                "bpc_float":         event_data.get("bpc_float"),
+                "bpc_price_to_book": event_data.get("bpc_price_to_book"),
+                "bpc_approval_prob": event_data.get("bpc_approval_prob"),
+                "bpc_months_cash":   event_data.get("bpc_months_cash"),
+                "bpc_net_cash":      event_data.get("bpc_net_cash"),
+                "bpc_cash_burn":     event_data.get("bpc_cash_burn"),
+                "bpc_trial_id":      event_data.get("bpc_trial_id"),
+                "bpc_next_label":    event_data.get("bpc_next_label"),
+                "bpc_fda_status":    event_data.get("bpc_fda_status"),
+            }
+
             if not existing:
                 event = FdaEvent(
                     ticker=event_data.get("ticker"),
@@ -72,9 +93,15 @@ def run_fda_scrape():
                     indication=event_data.get("indication"),
                     event_date=event_data["event_date"],
                     source=event_data.get("source", "unknown"),
+                    **{k: v for k, v in bpc_fields.items() if v is not None},
                 )
                 db.add(event)
                 added += 1
+            elif event_data.get("source") == "biopharmcatalyst":
+                # Update BPC real-time fields on existing records (price, volume, etc.)
+                for k, v in bpc_fields.items():
+                    if v is not None:
+                        setattr(existing, k, v)
 
         db.commit()
         db.close()
@@ -908,21 +935,33 @@ def _notify_penny_signals(signals: list):
 def run_already_moving_scan():
     """
     Lightweight scan every 10 min during market hours.
-    Detects stocks that are ALREADY running today (up 4%+) with FDA event in 0-3 days.
-    This pattern (GALT, NVCR, SYRA) is the strongest day-trade signal:
-    the market is positioning before the event -- join before retail catches on.
+    Detects stocks ALREADY running today (up 4%+) with FDA event in 0-3 days.
+    Pattern: GALT, NVCR, SYRA — market positioning before event.
+
+    Uses BPC API for real-time price/volume data (no per-ticker yfinance calls).
+    Falls back to yfinance for tickers not in BPC (EDGAR-sourced, etc.).
     """
     try:
-        import yfinance as yf
         from datetime import date, timedelta, datetime
         from backend.database import SessionLocal
         from backend.models import FdaEvent, AlertLog
         from backend.signals.alerter import send_alert
+        from backend.scrapers.biopharmcatalyst import fetch_bpc_realtime
 
         db = SessionLocal()
         today = date.today()
         cutoff = today + timedelta(days=3)
 
+        # --- Step 1: get BPC real-time data (one API call, all tickers) ---
+        bpc_data = fetch_bpc_realtime()
+        # Build lookup: ticker -> bpc record (keep closest event date)
+        bpc_map = {}
+        for row in bpc_data:
+            t = row.get("ticker")
+            if t and t not in bpc_map:
+                bpc_map[t] = row
+
+        # --- Step 2: get DB events in the next 0-3 days ---
         events = db.query(FdaEvent).filter(
             FdaEvent.event_date >= today,
             FdaEvent.event_date <= cutoff,
@@ -945,12 +984,25 @@ def run_already_moving_scan():
         for event in unique_events:
             ticker = event.ticker
             try:
-                info = yf.Ticker(ticker).info
-                chg_pct = info.get("regularMarketChangePercent") or 0
-                price   = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-                mktcap  = info.get("marketCap") or 0
+                chg_pct = None
+                price   = None
+                rel_vol = None
 
-                if chg_pct < 4.0:
+                # Primary: BPC real-time data
+                bpc = bpc_map.get(ticker)
+                if bpc:
+                    chg_pct = bpc.get("bpc_change_pct")
+                    price   = bpc.get("bpc_price")
+                    rel_vol = bpc.get("bpc_rel_volume")
+
+                # Fallback: yfinance (for tickers not in BPC response)
+                if chg_pct is None:
+                    import yfinance as yf
+                    info    = yf.Ticker(ticker).info
+                    chg_pct = info.get("regularMarketChangePercent") or 0
+                    price   = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+
+                if not chg_pct or chg_pct < 4.0:
                     continue
 
                 # Skip if already alerted recently
@@ -963,7 +1015,9 @@ def run_already_moving_scan():
                     continue
 
                 days_until = (event.event_date - today).days
-                entry_str  = f"${price:.4f}" if price < 1 else f"${price:.2f}"
+                price = price or 0
+                entry_str = f"${price:.4f}" if price < 1 else f"${price:.2f}"
+                vol_str   = f" | נפח x{rel_vol:.1f}" if rel_vol and rel_vol > 1.5 else ""
 
                 db.add(AlertLog(
                     ticker=ticker,
@@ -976,7 +1030,7 @@ def run_already_moving_scan():
                     "📈 <b>כבר עולה לפני FDA — " + ticker + "</b>",
                     "<i>" + (event.company or "") + "</i>",
                     "━━━━━━━━━━━━━━━━━━",
-                    f"<b>עלייה היום:</b>   +{chg_pct:.1f}%",
+                    f"<b>עלייה היום:</b>   +{chg_pct:.1f}%{vol_str}",
                     f"<b>מחיר כרגע:</b>   {entry_str}",
                     "━━━━━━━━━━━━━━━━━━",
                     f"<b>אירוע FDA:</b>   {event.event_type or 'FDA'} בעוד {days_until} ימים",

@@ -21,6 +21,25 @@ class FdaEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # BPC real-time enrichment (updated every 2h from BiopharmCatalyst API)
+    bpc_price        = Column(Float, nullable=True)   # current stock price
+    bpc_change_pct   = Column(Float, nullable=True)   # today's % change (real-time)
+    bpc_rel_volume   = Column(Float, nullable=True)   # volume / 20d avg (spike detector)
+    bpc_volume       = Column(Float, nullable=True)   # today's volume
+    bpc_avg_volume   = Column(Float, nullable=True)   # 20-day avg volume
+    bpc_optionable   = Column(Integer, nullable=True) # 1=has options, 0=stock-only
+    bpc_market_cap   = Column(Float, nullable=True)
+    bpc_insider_pct  = Column(Float, nullable=True)   # insider holdings %
+    bpc_float        = Column(Float, nullable=True)   # shares float
+    bpc_price_to_book = Column(Float, nullable=True)
+    bpc_approval_prob = Column(Float, nullable=True)  # likelihood_of_approval (paid tier)
+    bpc_months_cash  = Column(Float, nullable=True)   # estimated months of cash (paid tier)
+    bpc_net_cash     = Column(Float, nullable=True)
+    bpc_cash_burn    = Column(Float, nullable=True)   # monthly burn rate
+    bpc_trial_id     = Column(String, nullable=True)  # ClinicalTrials NCT ID
+    bpc_next_label   = Column(String, nullable=True)  # "Topline Data", "PDUFA Decision"
+    bpc_fda_status   = Column(String, nullable=True)  # "Ongoing", "Approved", etc.
+
 
 class OptionsSignal(Base):
     __tablename__ = "options_signals"

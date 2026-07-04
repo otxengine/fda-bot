@@ -32,6 +32,25 @@ def migrate_db():
     from sqlalchemy import text, inspect as sa_inspect
 
     NEW_COLUMNS = {
+        "fda_events": [
+            ("bpc_price",         "FLOAT"),
+            ("bpc_change_pct",    "FLOAT"),
+            ("bpc_rel_volume",    "FLOAT"),
+            ("bpc_volume",        "FLOAT"),
+            ("bpc_avg_volume",    "FLOAT"),
+            ("bpc_optionable",    "INTEGER"),
+            ("bpc_market_cap",    "FLOAT"),
+            ("bpc_insider_pct",   "FLOAT"),
+            ("bpc_float",         "FLOAT"),
+            ("bpc_price_to_book", "FLOAT"),
+            ("bpc_approval_prob", "FLOAT"),
+            ("bpc_months_cash",   "FLOAT"),
+            ("bpc_net_cash",      "FLOAT"),
+            ("bpc_cash_burn",     "FLOAT"),
+            ("bpc_trial_id",      "TEXT"),
+            ("bpc_next_label",    "TEXT"),
+            ("bpc_fda_status",    "TEXT"),
+        ],
         "options_signals": [
             ("event_pinned_ratio",        "FLOAT DEFAULT 0"),
             ("expiration_score",          "FLOAT DEFAULT 0"),
