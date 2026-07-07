@@ -26,12 +26,21 @@ def is_market_hours() -> bool:
 
 
 def run_fda_scrape():
-    """Job: scrape FDA calendar and update events table."""
+    """
+    Job: scrape FDA calendar (BPC v1 + all sources) and update events table.
+
+    Flow:
+      1. Pull from all sources → merge → deduplicate → save to DB
+      2. Collect newly-added tickers with events in next 14 days
+      3. Immediately scan those tickers (options + penny path)
+      4. Send Telegram alerts if BUY criteria met
+    """
     try:
         from backend.database import SessionLocal
         from backend.scrapers.fda_calendar import scrape_fda_calendar
         from backend.scrapers.biopharma import scrape_biopharmawatch
         from backend.models import FdaEvent
+        from datetime import date, timedelta
 
         logger.info("Starting FDA calendar scrape...")
         db = SessionLocal()
@@ -42,15 +51,19 @@ def run_fda_scrape():
         from backend.scrapers.edgar_pdufa import scrape_edgar_pdufa
         fda_events   = scrape_fda_calendar()
         bpw_events   = scrape_biopharmawatch()
-        bpc_events   = scrape_biopharmcatalyst()
+        bpc_events   = scrape_biopharmcatalyst()      # v1 API: 90+ events
         edgar_events = scrape_edgar_pdufa()
         multi_events = scrape_all_sources(days_forward=90)
         broad_events = scan_broad_biotech(iv_rank_threshold=60, max_tickers=200, db=db)
         all_events   = fda_events + bpw_events + bpc_events + edgar_events + multi_events + broad_events
 
+        today  = date.today()
+        cutoff = today + timedelta(days=14)   # scan new events if event within 14d
+
         added = 0
+        newly_discovered = []   # (ticker, event_date, event_type, company, drug_name)
+
         for event_data in all_events:
-            # Deduplicate: prefer ticker+date (works across sources with different company names)
             ticker = event_data.get("ticker")
             if ticker:
                 existing = db.query(FdaEvent).filter(
@@ -63,7 +76,6 @@ def run_fda_scrape():
                     FdaEvent.company == event_data["company"],
                 ).first()
 
-            # BPC fields to persist (available on all sources that set them)
             bpc_fields = {
                 "bpc_price":         event_data.get("bpc_price"),
                 "bpc_change_pct":    event_data.get("bpc_change_pct"),
@@ -76,6 +88,7 @@ def run_fda_scrape():
                 "bpc_float":         event_data.get("bpc_float"),
                 "bpc_price_to_book": event_data.get("bpc_price_to_book"),
                 "bpc_approval_prob": event_data.get("bpc_approval_prob"),
+                "bpc_prog_prob":     event_data.get("bpc_prog_prob"),
                 "bpc_months_cash":   event_data.get("bpc_months_cash"),
                 "bpc_net_cash":      event_data.get("bpc_net_cash"),
                 "bpc_cash_burn":     event_data.get("bpc_cash_burn"),
@@ -97,18 +110,159 @@ def run_fda_scrape():
                 )
                 db.add(event)
                 added += 1
+
+                # Queue for immediate scan if event is within 14 days
+                ev_date = event_data.get("event_date")
+                if ticker and ev_date and today <= ev_date <= cutoff:
+                    newly_discovered.append({
+                        "ticker":     ticker,
+                        "event_date": ev_date,
+                        "event_type": event_data.get("event_type", "Unknown"),
+                        "company":    event_data["company"],
+                        "drug_name":  event_data.get("drug_name"),
+                    })
+
             elif event_data.get("source") == "biopharmcatalyst":
-                # Update BPC real-time fields on existing records (price, volume, etc.)
                 for k, v in bpc_fields.items():
                     if v is not None:
                         setattr(existing, k, v)
 
         db.commit()
         db.close()
-        logger.info(f"FDA scrape complete: {added} new events added")
+        logger.info(f"FDA scrape complete: {added} new events added, {len(newly_discovered)} need immediate scan")
+
+        # ── Immediately scan newly discovered near-term events ─────────────────
+        if newly_discovered:
+            import threading
+            threading.Thread(
+                target=_scan_new_discoveries,
+                args=(newly_discovered,),
+                daemon=True,
+            ).start()
 
     except Exception as e:
         logger.error(f"FDA scrape job failed: {e}")
+
+
+def _scan_new_discoveries(discoveries: list):
+    """
+    Background: scan newly discovered FDA events (within 14 days).
+    Runs the standard options+penny analysis and sends alerts.
+    Called automatically after run_fda_scrape() finds new tickers.
+    """
+    try:
+        import time
+        from datetime import date
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, AlertLog
+        from backend.signals.alerter import send_alert, send_telegram
+
+        # Small delay to let DB commit settle
+        time.sleep(3)
+
+        logger.info(f"Auto-scanning {len(discoveries)} newly discovered events...")
+
+        # Deduplicate by ticker
+        seen = {}
+        for d in discoveries:
+            if d["ticker"] not in seen:
+                seen[d["ticker"]] = d
+        unique = list(seen.values())
+
+        # Run the standard realtime scan but only for these tickers
+        # Reuse run_realtime_scan logic but targeted
+        buy_signals = []
+        for disc in unique:
+            ticker     = disc["ticker"]
+            event_date = disc["event_date"]
+            event_type = disc["event_type"]
+            company    = disc["company"]
+            drug_name  = disc.get("drug_name")
+            days_until = (event_date - date.today()).days
+
+            try:
+                from backend.signals.unified_scanner import scan_one
+                result = scan_one(
+                    ticker=ticker,
+                    event_date=event_date,
+                    event_type=event_type,
+                    company=company,
+                    drug_name=drug_name,
+                    db=None,
+                    fda_event_id=None,
+                )
+                if result and result.get("stock_signal") == "BUY":
+                    result["_discovery_source"] = "new_bpc_event"
+                    buy_signals.append(result)
+                    logger.info(f"New discovery BUY: {ticker} score={result.get('composite_score')} days={days_until}")
+            except Exception as e:
+                logger.debug(f"New discovery scan {ticker}: {e}")
+
+        if not buy_signals:
+            logger.info("New discovery scan: no BUY signals from newly added events")
+            return
+
+        # Send Telegram notification about new discoveries
+        db = SessionLocal()
+        from datetime import datetime, timedelta
+        cooldown = datetime.utcnow() - timedelta(hours=4)
+
+        for sig in sorted(buy_signals, key=lambda x: x.get("composite_score", 0), reverse=True):
+            ticker = sig["ticker"]
+
+            # Cooldown check
+            recent = db.query(AlertLog).filter(
+                AlertLog.ticker == ticker,
+                AlertLog.alert_type == "stock_buy",
+                AlertLog.triggered_at >= cooldown,
+            ).first()
+            if recent:
+                continue
+
+            score      = sig.get("composite_score", 0)
+            days_until = sig.get("days_until", "?")
+            price      = sig.get("entry_price") or sig.get("stock_price") or 0
+            event_type = sig.get("event_type", "FDA")
+            drug       = sig.get("drug_name") or ""
+            reason     = sig.get("stock_signal_reason") or sig.get("reason") or ""
+            trade_type = sig.get("trade_type", "swing")
+            stop       = sig.get("stop_loss_price")
+
+            price_str = f"${price:.4f}" if price < 1 else f"${price:.2f}"
+            stop_str  = f"${stop:.4f}" if stop and stop < 1 else (f"${stop:.2f}" if stop else "—")
+            label     = "⚡ יום-עסקה" if trade_type == "day" else "🟢 קנייה"
+
+            tg_parts = [
+                f"🆕 <b>גילוי חדש — {label} {ticker}</b>",
+                f"<i>{sig.get('company', '')}</i>",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>סקור:</b>        {score:.0f}/100",
+                f"<b>מחיר:</b>        {price_str}",
+                f"<b>סטופ לוס:</b>    {stop_str}",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>אירוע FDA:</b>   {event_type} בעוד {days_until} ימים",
+                f"<b>תרופה:</b>       {drug or '—'}",
+                f"<b>סיבה:</b>        {reason}",
+                "━━━━━━━━━━━━━━━━━━",
+                "נגלה זה עתה ביומן FDA — הסריקה הופעלה אוטומטית",
+            ]
+            tg_text = chr(10).join(tg_parts)
+            plain   = f"NEW DISCOVERY BUY {ticker} score={score:.0f} FDA in {days_until}d"
+
+            send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
+            db.add(AlertLog(
+                ticker=ticker,
+                alert_type="stock_buy",
+                score_at_trigger=score,
+                message=plain,
+            ))
+
+        db.commit()
+        db.close()
+        logger.info(f"New discovery alerts sent: {len(buy_signals)} signals")
+
+    except Exception as e:
+        logger.error(f"_scan_new_discoveries failed: {e}")
 
 
 def run_realtime_scan(days_window: int = 7):
