@@ -44,6 +44,7 @@ def migrate_db():
             ("bpc_float",         "FLOAT"),
             ("bpc_price_to_book", "FLOAT"),
             ("bpc_approval_prob", "FLOAT"),
+            ("bpc_prog_prob",     "FLOAT"),
             ("bpc_months_cash",   "FLOAT"),
             ("bpc_net_cash",      "FLOAT"),
             ("bpc_cash_burn",     "FLOAT"),

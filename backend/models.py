@@ -32,7 +32,8 @@ class FdaEvent(Base):
     bpc_insider_pct  = Column(Float, nullable=True)   # insider holdings %
     bpc_float        = Column(Float, nullable=True)   # shares float
     bpc_price_to_book = Column(Float, nullable=True)
-    bpc_approval_prob = Column(Float, nullable=True)  # likelihood_of_approval (paid tier)
+    bpc_approval_prob = Column(Float, nullable=True)  # historical_loa: likelihood of approval
+    bpc_prog_prob    = Column(Float, nullable=True)   # historical_pop: probability of progression
     bpc_months_cash  = Column(Float, nullable=True)   # estimated months of cash (paid tier)
     bpc_net_cash     = Column(Float, nullable=True)
     bpc_cash_burn    = Column(Float, nullable=True)   # monthly burn rate
