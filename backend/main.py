@@ -1268,3 +1268,12 @@ def trigger_missed_detector():
     from backend.scheduler import run_missed_detector
     threading.Thread(target=run_missed_detector, daemon=True).start()
     return {"status": "missed detector started"}
+
+
+@app.post("/api/early-watch-now")
+def trigger_early_watch():
+    """Manually trigger early accumulation scan (1-4d window, EARLY_BUY signals)."""
+    import threading
+    from backend.scheduler import run_early_watch_scan
+    threading.Thread(target=run_early_watch_scan, daemon=True).start()
+    return {"status": "early watch scan started"}
