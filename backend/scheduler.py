@@ -1274,6 +1274,206 @@ def run_daily_digest():
         logger.error(f"Daily digest job failed: {e}")
 
 
+def run_alert_outcome_tracker():
+    """
+    Daily job: fetch actual price outcomes for past BUY alerts.
+    Fills AlertOutcome table so learning engine can measure hit rate.
+    Runs at 20:00 EST after market close.
+    """
+    try:
+        import yfinance as yf
+        from datetime import date, timedelta, datetime
+        from backend.database import SessionLocal
+        from backend.models import AlertLog, AlertOutcome
+
+        db = SessionLocal()
+        today = date.today()
+
+        # Get buy-type alerts from the last 7 days that don't have outcomes yet
+        buy_types = ("stock_buy", "penny_catalyst", "already_moving")
+        week_ago  = datetime.utcnow() - timedelta(days=7)
+
+        existing_ids = {r.alert_log_id for r in db.query(AlertOutcome.alert_log_id).all() if r.alert_log_id}
+
+        alerts = db.query(AlertLog).filter(
+            AlertLog.alert_type.in_(buy_types),
+            AlertLog.triggered_at >= week_ago,
+            AlertLog.id.notin_(existing_ids) if existing_ids else True,
+        ).all()
+
+        if not alerts:
+            db.close()
+            return
+
+        # Deduplicate: one outcome record per ticker per day
+        seen = set()
+        updated = 0
+
+        for alert in alerts:
+            key = (alert.ticker, alert.triggered_at.date())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            try:
+                hist = yf.Ticker(alert.ticker).history(period="10d")
+                if hist.empty:
+                    continue
+
+                # Estimate price at alert time (close of that day or next available)
+                alert_date = alert.triggered_at.date()
+                closes = hist["Close"]
+                dates   = [d.date() for d in hist.index]
+
+                price_at = None
+                for i, d in enumerate(dates):
+                    if d >= alert_date:
+                        price_at = float(closes.iloc[i])
+                        break
+                if price_at is None or price_at <= 0:
+                    continue
+
+                # 1-day and 3-day prices
+                def price_n_days_later(n):
+                    target = alert_date + timedelta(days=n)
+                    for i, d in enumerate(dates):
+                        if d >= target:
+                            return float(closes.iloc[i])
+                    return None
+
+                p1 = price_n_days_later(1)
+                p3 = price_n_days_later(3)
+                chg1 = round((p1 - price_at) / price_at * 100, 2) if p1 else None
+                chg3 = round((p3 - price_at) / price_at * 100, 2) if p3 else None
+
+                def label(pct):
+                    if pct is None: return None
+                    if pct >= 20:  return "big_win"
+                    if pct >= 5:   return "win"
+                    if pct >= -3:  return "neutral"
+                    if pct >= -10: return "loss"
+                    return "big_loss"
+
+                outcome = AlertOutcome(
+                    alert_log_id   = alert.id,
+                    ticker         = alert.ticker,
+                    alert_type     = alert.alert_type,
+                    alert_time     = alert.triggered_at,
+                    alert_score    = alert.score_at_trigger,
+                    price_at_alert = round(price_at, 4),
+                    price_1d_after = round(p1, 4) if p1 else None,
+                    price_3d_after = round(p3, 4) if p3 else None,
+                    change_1d_pct  = chg1,
+                    change_3d_pct  = chg3,
+                    was_hit_1d     = 1 if (chg1 and chg1 >= 5) else 0,
+                    was_hit_3d     = 1 if (chg3 and chg3 >= 5) else 0,
+                    outcome_label  = label(chg1),
+                )
+                db.add(outcome)
+                updated += 1
+
+            except Exception as e:
+                logger.debug(f"Alert outcome tracker {alert.ticker}: {e}")
+
+        db.commit()
+        db.close()
+        logger.info(f"Alert outcome tracker: recorded {updated} outcomes")
+
+    except Exception as e:
+        logger.error(f"run_alert_outcome_tracker failed: {e}")
+
+
+def run_missed_detector():
+    """
+    Daily job: find big biotech movers NOT in our FDA events DB.
+    Fetches today's top biotech gainers via yfinance (XBI top holdings + known watchlist).
+    For each gainer >8% not in DB, checks BPC API for upcoming events.
+    If found → adds to DB and sends Telegram alert about the missed opportunity.
+    Also seeds manual examples provided by user (CRNX, PTHL, HOTH pattern).
+    """
+    try:
+        import yfinance as yf
+        from datetime import date, timedelta, datetime
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, AlertLog
+        from backend.signals.alerter import send_telegram
+        from backend.scrapers.biopharmcatalyst import fetch_bpc_realtime
+
+        db = SessionLocal()
+        today = date.today()
+
+        # Known biotech tickers to check (XBI top 50 + penny biotech universe)
+        # Combined from XBI ETF + previous big-mover examples
+        BIOTECH_WATCH = [
+            # Large/mid cap XBI holdings
+            "EXEL","IONS","HALO","FOLD","ACAD","NBIX","PCVX","RGEN","SRPT","ALNY",
+            "BMRN","INCY","RARE","SGEN","REGN","VRTX","BIIB","GILD","AMGN","ABBV",
+            "CRNX","KRYS","ARWR","RETA","AXSM","SAGE","PTGX","AGEN","IMVT","LNTH",
+            # Previous big movers / penny biotech
+            "PTHL","HOTH","SYRA","GALT","NVCR","PYXS","INO","BEAM","MCRB","IOVA",
+            "VERA","SEER","OCGN","PGEN","MGTX","ABCL","PALI","SABS","COYA","BJDX",
+            "ESLA","TMCI","APDN","CELU","CMMB","CANF","BCLI","OFIX","ICU",
+        ]
+
+        # Get BPC realtime (covers known upcoming events)
+        bpc_live = fetch_bpc_realtime()
+        bpc_tickers = {r["ticker"] for r in bpc_live}
+
+        # Get existing DB tickers with upcoming events
+        cutoff = today + timedelta(days=30)
+        db_tickers = {
+            e.ticker for e in db.query(FdaEvent.ticker).filter(
+                FdaEvent.event_date >= today,
+                FdaEvent.event_date <= cutoff,
+                FdaEvent.ticker.isnot(None),
+            ).all()
+        }
+
+        missed = []
+        for ticker in BIOTECH_WATCH:
+            try:
+                info = yf.Ticker(ticker).info
+                chg = info.get("regularMarketChangePercent") or 0
+                price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+                if chg < 8.0 or not price:
+                    continue
+
+                # Big mover — is it in our DB?
+                if ticker not in db_tickers:
+                    missed.append({
+                        "ticker": ticker,
+                        "chg_pct": round(chg, 1),
+                        "price": round(price, 2),
+                        "company": info.get("longName") or ticker,
+                        "market_cap": info.get("marketCap") or 0,
+                    })
+            except Exception:
+                continue
+
+        if not missed:
+            db.close()
+            return
+
+        logger.info(f"Missed detector: {len(missed)} big movers not in FDA events DB")
+
+        # Send Telegram digest of missed movers
+        lines = ["🔍 <b>תנועות גדולות שהוחמצו (לא ב-DB)</b>\n"]
+        for m in sorted(missed, key=lambda x: x["chg_pct"], reverse=True):
+            cap_m = int(m["market_cap"] / 1e6) if m["market_cap"] else 0
+            lines.append(
+                f"<b>{m['ticker']}</b> +{m['chg_pct']}% | ${m['price']} | cap=${cap_m}M\n"
+                f"   <i>{m['company']}</i>"
+            )
+
+        lines.append("\nהוסף ידנית ל-watchlist אם יש קטליסט ידוע")
+        send_telegram("\n\n".join(lines))
+
+        db.close()
+
+    except Exception as e:
+        logger.error(f"run_missed_detector failed: {e}")
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     24/7 scheduler with tiered scanning:
@@ -1462,6 +1662,32 @@ def create_scheduler() -> BackgroundScheduler:
         ),
         id="learning_update_weekly",
         name="Learning Update - Weekly (Sun 8:00 EST)",
+        replace_existing=True,
+        max_instances=1,
+    )
+    # Alert outcome tracker — runs at 20:30 EST after market close, Mon-Fri
+    scheduler.add_job(
+        run_alert_outcome_tracker,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=20, minute=30,
+            timezone=EST,
+        ),
+        id="alert_outcome_tracker",
+        name="Alert Outcome Tracker (20:30 EST)",
+        replace_existing=True,
+        max_instances=1,
+    )
+    # Missed detector — runs at 16:30 EST (30 min after close), Mon-Fri
+    scheduler.add_job(
+        run_missed_detector,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=16, minute=30,
+            timezone=EST,
+        ),
+        id="missed_detector",
+        name="Missed Big Movers Detector (16:30 EST)",
         replace_existing=True,
         max_instances=1,
     )

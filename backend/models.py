@@ -127,6 +127,32 @@ class AlertLog(Base):
     acknowledged    = Column(Integer, default=0)
 
 
+class AlertOutcome(Base):
+    """
+    Tracks actual price outcomes for every BUY alert sent.
+    Populated by run_alert_outcome_tracker() daily job.
+    Used by learning engine to measure signal quality and adjust thresholds.
+    """
+    __tablename__ = "alert_outcomes"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    alert_log_id   = Column(Integer, nullable=True)   # FK to alert_log.id
+    ticker         = Column(String, index=True)
+    alert_type     = Column(String)                   # stock_buy / penny_catalyst / already_moving
+    alert_time     = Column(DateTime)
+    alert_score    = Column(Float, nullable=True)
+    price_at_alert = Column(Float, nullable=True)     # price when alert fired
+    price_1d_after = Column(Float, nullable=True)
+    price_3d_after = Column(Float, nullable=True)
+    change_1d_pct  = Column(Float, nullable=True)
+    change_3d_pct  = Column(Float, nullable=True)
+    was_hit_1d     = Column(Integer, default=0)       # 1 = gained ≥5% within 1 day
+    was_hit_3d     = Column(Integer, default=0)       # 1 = gained ≥5% within 3 days
+    outcome_label  = Column(String, nullable=True)    # big_win/win/neutral/loss/big_loss
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    updated_at     = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class LearningInsight(Base):
     """
     Stores LLM-generated insights: negative event flags + weight adjustments.

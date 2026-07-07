@@ -22,7 +22,7 @@ def get_db():
 
 
 def init_db():
-    from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog, LearningInsight
+    from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog, LearningInsight, AlertOutcome
     Base.metadata.create_all(bind=engine)
     migrate_db()
 

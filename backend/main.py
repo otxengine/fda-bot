@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from backend.database import init_db, get_db, SessionLocal
-from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog
+from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog, AlertOutcome
 from backend.scheduler import (
     create_scheduler, run_fda_scrape, run_options_scan,
     run_history_update, run_cleanup, run_realtime_scan,
@@ -1173,3 +1173,98 @@ if __name__ == "__main__":
         reload=False,
         log_level="info",
     )
+
+
+@app.get("/api/performance")
+def get_performance(db: Session = Depends(get_db)):
+    """
+    Alert performance dashboard: hit rate, avg return, best/worst signals.
+    Powered by AlertOutcome table (filled by run_alert_outcome_tracker daily).
+    """
+    from sqlalchemy import func
+
+    outcomes = db.query(AlertOutcome).all()
+
+    if not outcomes:
+        return {"message": "No outcome data yet. Outcomes are tracked daily after market close.", "total": 0}
+
+    # Overall stats
+    total = len(outcomes)
+    with_1d = [o for o in outcomes if o.change_1d_pct is not None]
+    with_3d = [o for o in outcomes if o.change_3d_pct is not None]
+
+    def safe_avg(lst, key):
+        vals = [getattr(o, key) for o in lst if getattr(o, key) is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    hit_1d = sum(1 for o in with_1d if o.was_hit_1d) if with_1d else 0
+    hit_3d = sum(1 for o in with_3d if o.was_hit_3d) if with_3d else 0
+
+    # Per alert_type breakdown
+    type_stats = {}
+    for atype in ("stock_buy", "penny_catalyst", "already_moving"):
+        subset = [o for o in outcomes if o.alert_type == atype]
+        s1d = [o for o in subset if o.change_1d_pct is not None]
+        if not subset:
+            continue
+        type_stats[atype] = {
+            "count":       len(subset),
+            "hit_rate_1d": round(sum(1 for o in s1d if o.was_hit_1d) / len(s1d) * 100, 1) if s1d else None,
+            "avg_1d_pct":  safe_avg(s1d, "change_1d_pct"),
+            "avg_3d_pct":  safe_avg([o for o in subset if o.change_3d_pct is not None], "change_3d_pct"),
+            "best_1d":     max((o.change_1d_pct for o in s1d), default=None),
+            "worst_1d":    min((o.change_1d_pct for o in s1d), default=None),
+        }
+
+    # Outcome label distribution
+    label_counts = {}
+    for o in outcomes:
+        lbl = o.outcome_label or "pending"
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+    # Recent 10 outcomes
+    recent = sorted(outcomes, key=lambda o: o.alert_time, reverse=True)[:10]
+    recent_list = []
+    for o in recent:
+        recent_list.append({
+            "ticker":      o.ticker,
+            "alert_type":  o.alert_type,
+            "alert_time":  o.alert_time.isoformat() if o.alert_time else None,
+            "score":       o.alert_score,
+            "price_at":    o.price_at_alert,
+            "chg_1d":      o.change_1d_pct,
+            "chg_3d":      o.change_3d_pct,
+            "outcome":     o.outcome_label,
+            "hit_1d":      bool(o.was_hit_1d),
+        })
+
+    return {
+        "total_alerts_tracked": total,
+        "overall": {
+            "hit_rate_1d_pct": round(hit_1d / len(with_1d) * 100, 1) if with_1d else None,
+            "hit_rate_3d_pct": round(hit_3d / len(with_3d) * 100, 1) if with_3d else None,
+            "avg_return_1d":   safe_avg(with_1d, "change_1d_pct"),
+            "avg_return_3d":   safe_avg(with_3d, "change_3d_pct"),
+        },
+        "by_alert_type":   type_stats,
+        "outcome_labels":  label_counts,
+        "recent_outcomes": recent_list,
+    }
+
+
+@app.post("/api/track-outcomes-now")
+def trigger_outcome_tracking():
+    """Manually trigger alert outcome tracking (fills AlertOutcome table)."""
+    import threading
+    from backend.scheduler import run_alert_outcome_tracker
+    threading.Thread(target=run_alert_outcome_tracker, daemon=True).start()
+    return {"status": "outcome tracking started"}
+
+
+@app.post("/api/missed-detector-now")
+def trigger_missed_detector():
+    """Manually trigger missed big-movers detector."""
+    import threading
+    from backend.scheduler import run_missed_detector
+    threading.Thread(target=run_missed_detector, daemon=True).start()
+    return {"status": "missed detector started"}
