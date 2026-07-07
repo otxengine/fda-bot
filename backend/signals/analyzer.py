@@ -277,6 +277,9 @@ def analyze_ticker(
                 "orange" if scores["composite_score"] >= THRESHOLD_ORANGE else "green"
             )
 
+    # ── Days until event (needed for already-moving check below) ─────────────
+    days_until = (event_date - date.today()).days if event_date else 999
+
     # ── Already-moving bonus: stock already running today before event ────────
     # Lesson from examples (GALT, NVCR, SYRA): when the market is already
     # positioning (stock up 3%+ today) AND event is 0-3 days away, that IS
@@ -313,7 +316,6 @@ def analyze_ticker(
         logger.debug(f"Probability compute error for {ticker}: {e}")
 
     # ── A2: Entry timing window ───────────────────────────────────────────────
-    days_until = (event_date - date.today()).days if event_date else 999
     if days_until <= 2:
         entry_window = "prime"       # best for 1-2 day catalyst trade
     elif days_until <= 4:
@@ -465,6 +467,44 @@ def analyze_ticker(
         elif iv_crush_warning and score_val < 38:
             stock_signal = "AVOID"
             stock_signal_reason = "IV יקר עם signal כיווני חלש"
+
+        # EARLY_BUY: 1-4 days out, calls quietly building, stock not yet moving
+        # Lower thresholds — catch it BEFORE the price action starts
+        elif (1 <= days_until <= 4
+              and cp_val >= 1.2
+              and iv_val >= 40
+              and score_val >= 25
+              and today_change_pct < 3.0   # stock hasn't moved yet
+              and not liquidity_warning):
+            # C/P trend: is ratio accelerating vs last scan?
+            cp_trend_accel = False
+            prev_cp_val = None
+            if db:
+                try:
+                    from backend.models import OptionsSignal as _OS
+                    prev_sig = (
+                        db.query(_OS)
+                        .filter(_OS.ticker == ticker)
+                        .order_by(_OS.scan_time.desc())
+                        .first()
+                    )
+                    if prev_sig and prev_sig.call_put_ratio:
+                        prev_cp_val = prev_sig.call_put_ratio
+                        cp_trend_accel = (cp_val - prev_cp_val) >= 0.2
+                except Exception as e:
+                    logger.debug(f"C/P trend check {ticker}: {e}")
+
+            stock_signal = "EARLY_BUY"
+            reasons = [f"קולים צוברים לפני FDA ({days_until}d)"]
+            reasons.append(f"C/P {cp_val:.1f}")
+            reasons.append(f"IV rank {iv_val:.0f}")
+            if cp_trend_accel and prev_cp_val:
+                reasons.append(f"יחס עולה ({prev_cp_val:.1f}→{cp_val:.1f})")
+            if today_change_pct < 1.0:
+                reasons.append("מניה עוד לא זזה")
+            stock_signal_reason = " | ".join(reasons)
+            entry_price_val = stock_price if stock_price else None
+            stop_loss_price_val = round(stock_price * 0.93, 2) if stock_price else None  # 7% stop
     else:
         # Outside 0-7 day window — monitoring only
         stock_signal = "WATCH"

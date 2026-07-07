@@ -446,12 +446,11 @@ def run_options_scan(force: bool = False):
                 db.add(signal)
                 scanned += 1
 
-                # Send BUY alert only when:
-                # 1. signal flipped to BUY (score≥50 + bullish flow)
-                # 2. AND event is within 0-7 days (prime catalyst window)
+                # Send BUY alert only when signal is new and within window
                 days_until = (event.event_date - today).days
                 prev_stock_signal = prev_signal.stock_signal if prev_signal else None
                 new_stock_signal = result.get("stock_signal")
+
                 if (new_stock_signal == "BUY"
                         and prev_stock_signal != "BUY"
                         and 0 <= days_until <= 7):
@@ -472,6 +471,27 @@ def run_options_scan(force: bool = False):
                         "analyst_bullish":  result.get("analyst_bullish"),
                         "squeeze_setup":    result.get("squeeze_setup"),
                     })
+
+                # Also alert on EARLY_BUY: first time seeing it for this ticker
+                elif (new_stock_signal == "EARLY_BUY"
+                        and prev_stock_signal not in ("EARLY_BUY", "BUY")
+                        and 8 <= days_until <= 21):
+                    _notify_early_accumulation([{
+                        "ticker":         event.ticker,
+                        "company":        event.company,
+                        "event_type":     event.event_type,
+                        "drug_name":      event.drug_name,
+                        "days_until":     days_until,
+                        "event_date":     event.event_date.isoformat(),
+                        "score":          result.get("composite_score", 0),
+                        "call_put_ratio": result.get("call_put_ratio"),
+                        "iv_rank":        result.get("iv_rank"),
+                        "stock_price":    result.get("stock_price"),
+                        "entry_price":    result.get("entry_price"),
+                        "stop_loss":      result.get("stop_loss_price"),
+                        "reason":         result.get("stock_signal_reason"),
+                        "flow_velocity":  result.get("flow_velocity", 0),
+                    }])
 
         db.commit()
         db.close()
@@ -1370,7 +1390,7 @@ def run_daily_digest():
         db.close()
 
         SCORE_EMOJI = {"red": "🔴", "orange": "🟠", "green": "🟢"}
-        SIGNAL_EMOJI = {"BUY": "🟢", "WATCH": "👀", "AVOID": "🔴"}
+        SIGNAL_EMOJI = {"BUY": "🟢", "EARLY_BUY": "🔭", "EARLY_WATCH": "📡", "WATCH": "👀", "AVOID": "🔴"}
 
         lines = ["📅 <b>אירועי FDA — הבאים 1-2 ימים</b>\n"]
         seen = set()
@@ -1637,6 +1657,173 @@ def run_missed_detector():
         logger.error(f"run_missed_detector failed: {e}")
 
 
+def run_early_watch_scan():
+    """
+    Scan for institutional accumulation 1-4 days before FDA events.
+    Fires when C/P is quietly building + IV rising but stock hasn't moved yet.
+    This is the predictive edge: enter BEFORE the stock runs, not after.
+    Runs every 30 min during market hours (Mon-Fri 9:00-15:30 EST).
+    """
+    try:
+        from datetime import date, timedelta, datetime
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, OptionsSignal, AlertLog
+        from backend.data.polygon import PolygonClient
+        from backend.data.yfinance_client import YFinanceClient
+        from backend.signals.analyzer import analyze_ticker
+
+        logger.info("Starting early watch scan (1-4d window)...")
+        db = SessionLocal()
+        polygon = PolygonClient()
+        yf_client = YFinanceClient()
+
+        today        = date.today()
+        window_start = today + timedelta(days=1)
+        window_end   = today + timedelta(days=4)
+
+        events = db.query(FdaEvent).filter(
+            FdaEvent.event_date >= window_start,
+            FdaEvent.event_date <= window_end,
+            FdaEvent.ticker.isnot(None),
+        ).all()
+
+        if not events:
+            db.close()
+            logger.info("Early watch scan: no events in 8-21d window")
+            return
+
+        cooldown_cutoff = datetime.utcnow() - timedelta(hours=4)
+        early_buy_signals = []
+        scanned = 0
+
+        # Deduplicate by ticker
+        seen_tickers = {}
+        for event in events:
+            if event.ticker not in seen_tickers:
+                seen_tickers[event.ticker] = event
+        unique_events = list(seen_tickers.values())
+
+        for event in unique_events:
+            try:
+                result = analyze_ticker(
+                    ticker=event.ticker,
+                    polygon_client=polygon,
+                    yfinance_client=yf_client,
+                    event_date=event.event_date,
+                    event_type=event.event_type,
+                    drug_name=event.drug_name,
+                    company=event.company,
+                    db=db,
+                    fda_event_id=event.id,
+                )
+                if not result:
+                    continue
+
+                scanned += 1
+                signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
+                db.add(signal)
+
+                if result.get("stock_signal") == "EARLY_BUY":
+                    recent = db.query(AlertLog).filter(
+                        AlertLog.ticker == event.ticker,
+                        AlertLog.alert_type == "early_accumulation",
+                        AlertLog.triggered_at >= cooldown_cutoff,
+                    ).first()
+                    if recent:
+                        continue
+
+                    days_until = (event.event_date - today).days
+                    early_buy_signals.append({
+                        "ticker":         event.ticker,
+                        "company":        event.company,
+                        "event_type":     event.event_type,
+                        "drug_name":      event.drug_name,
+                        "days_until":     days_until,
+                        "event_date":     event.event_date.isoformat(),
+                        "score":          result.get("composite_score", 0),
+                        "call_put_ratio": result.get("call_put_ratio"),
+                        "iv_rank":        result.get("iv_rank"),
+                        "stock_price":    result.get("stock_price"),
+                        "entry_price":    result.get("entry_price"),
+                        "stop_loss":      result.get("stop_loss_price"),
+                        "reason":         result.get("stock_signal_reason"),
+                        "flow_velocity":  result.get("flow_velocity", 0),
+                    })
+                    db.add(AlertLog(
+                        ticker=event.ticker,
+                        alert_type="early_accumulation",
+                        score_at_trigger=result.get("composite_score"),
+                        message=(
+                            f"EARLY_BUY {event.ticker} score={result.get('composite_score',0):.0f} "
+                            f"C/P={result.get('call_put_ratio',0):.1f} days={days_until}"
+                        ),
+                    ))
+
+            except Exception as e:
+                logger.debug(f"Early watch scan {event.ticker}: {e}")
+
+        db.commit()
+        db.close()
+        logger.info(f"Early watch scan: {scanned} scanned, {len(early_buy_signals)} EARLY_BUY signals")
+
+        if early_buy_signals:
+            _notify_early_accumulation(early_buy_signals)
+
+    except Exception as e:
+        logger.error(f"run_early_watch_scan failed: {e}")
+
+
+def _notify_early_accumulation(signals: list):
+    """Send Telegram alert for early institutional accumulation (8-21d before event)."""
+    try:
+        from backend.signals.alerter import send_alert
+
+        for sig in sorted(signals, key=lambda x: x.get("score", 0), reverse=True):
+            ticker = sig["ticker"]
+            days   = sig.get("days_until", "?")
+            score  = sig.get("score", 0)
+            cp     = sig.get("call_put_ratio") or 1.0
+            ivr    = sig.get("iv_rank") or 0
+            price  = sig.get("stock_price") or sig.get("entry_price") or 0
+            entry  = sig.get("entry_price")
+            stop   = sig.get("stop_loss")
+            reason = sig.get("reason") or ""
+            fv     = sig.get("flow_velocity", 0)
+
+            price_str = f"${price:.4f}" if price and price < 1 else (f"${price:.2f}" if price else "—")
+            entry_str = f"${entry:.4f}" if entry and entry < 1 else (f"${entry:.2f}" if entry else "—")
+            stop_str  = f"${stop:.4f}"  if stop  and stop  < 1 else (f"${stop:.2f}"  if stop  else "—")
+            fv_str    = f" | פרמיום +{fv:.0f}%" if fv > 20 else ""
+
+            tg_parts = [
+                f"🔭 <b>צבירה מוסדית מוקדמת — {ticker}</b>",
+                f"<i>{sig.get('company', '')}</i>",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>כניסה:</b>       {entry_str}",
+                f"<b>סטופ לוס:</b>    {stop_str} (10%)",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>ימים לאירוע:</b> {days}d ({sig.get('event_date', '')})",
+                f"<b>אירוע:</b>       {sig.get('event_type', 'FDA')}",
+                f"<b>תרופה:</b>       {sig.get('drug_name') or '—'}",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>C/P יחס:</b>     {cp:.1f}x (קולים צוברים){fv_str}",
+                f"<b>IV Rank:</b>     {ivr:.0f} (פרמיום עולה)",
+                f"<b>ציון כולל:</b>   {score:.0f}/100",
+                "━━━━━━━━━━━━━━━━━━",
+                f"<b>סיבה:</b> {reason}",
+                "",
+                "⏰ <b>כניסה לפני שהמניה זינקה — FDA בעוד 1-4 ימים</b>",
+                "🎯 <b>צא יום לפני האירוע (אל תחזיק דרך ה-FDA)</b>",
+            ]
+            tg_text = chr(10).join(tg_parts)
+            plain = f"EARLY_BUY {ticker} C/P={cp:.1f} IV={ivr:.0f} {days}d to event score={score:.0f}"
+            send_alert("early_accumulation", ticker, plain, telegram_text=tg_text)
+            logger.info(f"Early accumulation alert: {ticker} C/P={cp:.1f} IV={ivr:.0f} {days}d")
+
+    except Exception as e:
+        logger.error(f"_notify_early_accumulation failed: {e}")
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     24/7 scheduler with tiered scanning:
@@ -1786,6 +1973,23 @@ def create_scheduler() -> BackgroundScheduler:
         ),
         id="already_moving_scan",
         name="Already-Moving FDA Scan (10min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── EARLY WATCH: 1-4d window, every 30 min 9:00-15:30 EST Mon-Fri ────────
+    # Predictive: C/P building + IV rising before stock moves. Fast trades only.
+    scheduler.add_job(
+        run_early_watch_scan,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="*/30",
+            timezone=EST,
+        ),
+        id="early_watch_scan",
+        name="Early Accumulation Scan 1-4d (30min)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
