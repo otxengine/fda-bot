@@ -1270,6 +1270,50 @@ def trigger_missed_detector():
     return {"status": "missed detector started"}
 
 
+@app.post("/api/events/add")
+def add_manual_event(payload: dict):
+    """Manually add or update an FDA/catalyst event in the DB."""
+    from backend.database import SessionLocal
+    from backend.models import FdaEvent
+    from datetime import date
+
+    db = SessionLocal()
+    try:
+        event_date = date.fromisoformat(payload["event_date"])
+        ticker = payload.get("ticker")
+
+        existing = None
+        if ticker:
+            existing = db.query(FdaEvent).filter(
+                FdaEvent.ticker == ticker,
+                FdaEvent.event_date == event_date,
+            ).first()
+
+        if existing:
+            for field in ("event_type", "drug_name", "indication", "company", "source"):
+                if payload.get(field):
+                    setattr(existing, field, payload[field])
+            db.commit()
+            db.refresh(existing)
+            return {"status": "updated", "id": existing.id, "ticker": ticker, "event_date": str(event_date)}
+        else:
+            ev = FdaEvent(
+                ticker=ticker,
+                company=payload.get("company", ticker),
+                event_type=payload.get("event_type", "Catalyst"),
+                drug_name=payload.get("drug_name"),
+                indication=payload.get("indication"),
+                event_date=event_date,
+                source=payload.get("source", "manual"),
+            )
+            db.add(ev)
+            db.commit()
+            db.refresh(ev)
+            return {"status": "added", "id": ev.id, "ticker": ticker, "event_date": str(event_date)}
+    finally:
+        db.close()
+
+
 @app.post("/api/early-watch-now")
 def trigger_early_watch():
     """Manually trigger early accumulation scan (1-4d window, EARLY_BUY signals)."""
