@@ -45,7 +45,7 @@ def run_fda_scrape():
         bpc_events   = scrape_biopharmcatalyst()
         edgar_events = scrape_edgar_pdufa()
         multi_events = scrape_all_sources(days_forward=90)
-        broad_events = scan_broad_biotech(iv_rank_threshold=60, max_tickers=150)
+        broad_events = scan_broad_biotech(iv_rank_threshold=60, max_tickers=200, db=db)
         all_events   = fda_events + bpw_events + bpc_events + edgar_events + multi_events + broad_events
 
         added = 0
@@ -1385,11 +1385,18 @@ def run_alert_outcome_tracker():
 
 def run_missed_detector():
     """
-    Daily job: find big biotech movers NOT in our FDA events DB.
-    Fetches today's top biotech gainers via yfinance (XBI top holdings + known watchlist).
-    For each gainer >8% not in DB, checks BPC API for upcoming events.
-    If found → adds to DB and sends Telegram alert about the missed opportunity.
-    Also seeds manual examples provided by user (CRNX, PTHL, HOTH pattern).
+    Daily job (16:30 EST): scan the FULL autonomous biotech universe for big movers.
+
+    Uses build_biotech_universe() which pulls from:
+      - Hardcoded seed (~200 tickers)
+      - XBI/IBB ETF constituents (live download)
+      - EDGAR recent 8-K filers (active FDA companies)
+      - All tickers ever seen in fda_events DB
+
+    For each gainer >8% not already in DB with upcoming event:
+      1. Adds as 'auto_discovery' placeholder to fda_events
+      2. Logs to AlertLog
+      3. Sends Telegram alert
     """
     try:
         import yfinance as yf
@@ -1397,29 +1404,16 @@ def run_missed_detector():
         from backend.database import SessionLocal
         from backend.models import FdaEvent, AlertLog
         from backend.signals.alerter import send_telegram
-        from backend.scrapers.biopharmcatalyst import fetch_bpc_realtime
+        from backend.scrapers.biotech_universe_builder import build_biotech_universe, update_universe_from_mover
 
         db = SessionLocal()
         today = date.today()
 
-        # Known biotech tickers to check (XBI top 50 + penny biotech universe)
-        # Combined from XBI ETF + previous big-mover examples
-        BIOTECH_WATCH = [
-            # Large/mid cap XBI holdings
-            "EXEL","IONS","HALO","FOLD","ACAD","NBIX","PCVX","RGEN","SRPT","ALNY",
-            "BMRN","INCY","RARE","SGEN","REGN","VRTX","BIIB","GILD","AMGN","ABBV",
-            "CRNX","KRYS","ARWR","RETA","AXSM","SAGE","PTGX","AGEN","IMVT","LNTH",
-            # Previous big movers / penny biotech
-            "PTHL","HOTH","SYRA","GALT","NVCR","PYXS","INO","BEAM","MCRB","IOVA",
-            "VERA","SEER","OCGN","PGEN","MGTX","ABCL","PALI","SABS","COYA","BJDX",
-            "ESLA","TMCI","APDN","CELU","CMMB","CANF","BCLI","OFIX","ICU",
-        ]
+        # Build comprehensive autonomous universe
+        universe = build_biotech_universe(db=db)
+        logger.info(f"Missed detector: scanning {len(universe)} tickers from autonomous universe")
 
-        # Get BPC realtime (covers known upcoming events)
-        bpc_live = fetch_bpc_realtime()
-        bpc_tickers = {r["ticker"] for r in bpc_live}
-
-        # Get existing DB tickers with upcoming events
+        # Get existing DB tickers with upcoming events (next 30d)
         cutoff = today + timedelta(days=30)
         db_tickers = {
             e.ticker for e in db.query(FdaEvent.ticker).filter(
@@ -1430,7 +1424,7 @@ def run_missed_detector():
         }
 
         missed = []
-        for ticker in BIOTECH_WATCH:
+        for ticker in universe:
             try:
                 info = yf.Ticker(ticker).info
                 chg = info.get("regularMarketChangePercent") or 0
@@ -1438,36 +1432,51 @@ def run_missed_detector():
                 if chg < 8.0 or not price:
                     continue
 
-                # Big mover — is it in our DB?
+                # Big mover not in upcoming events DB → missed opportunity
                 if ticker not in db_tickers:
+                    company = info.get("longName") or info.get("shortName") or ticker
+                    mktcap  = info.get("marketCap") or 0
                     missed.append({
-                        "ticker": ticker,
-                        "chg_pct": round(chg, 1),
-                        "price": round(price, 2),
-                        "company": info.get("longName") or ticker,
-                        "market_cap": info.get("marketCap") or 0,
+                        "ticker":     ticker,
+                        "chg_pct":   round(chg, 1),
+                        "price":     round(price, 2),
+                        "company":   company,
+                        "market_cap": mktcap,
                     })
+                    # Auto-add as placeholder so future scans will watch it
+                    update_universe_from_mover(ticker, db)
+
             except Exception:
                 continue
 
         if not missed:
+            db.commit()
             db.close()
             return
 
         logger.info(f"Missed detector: {len(missed)} big movers not in FDA events DB")
 
-        # Send Telegram digest of missed movers
+        # Log each missed to AlertLog for outcome tracking
+        for m in missed:
+            db.add(AlertLog(
+                ticker=m["ticker"],
+                alert_type="missed_mover",
+                score_at_trigger=m["chg_pct"],
+                message=f"missed {m['ticker']} +{m['chg_pct']}% not in FDA DB",
+            ))
+
+        # Send Telegram digest
         lines = ["🔍 <b>תנועות גדולות שהוחמצו (לא ב-DB)</b>\n"]
-        for m in sorted(missed, key=lambda x: x["chg_pct"], reverse=True):
+        for m in sorted(missed, key=lambda x: x["chg_pct"], reverse=True)[:10]:
             cap_m = int(m["market_cap"] / 1e6) if m["market_cap"] else 0
             lines.append(
                 f"<b>{m['ticker']}</b> +{m['chg_pct']}% | ${m['price']} | cap=${cap_m}M\n"
                 f"   <i>{m['company']}</i>"
             )
-
-        lines.append("\nהוסף ידנית ל-watchlist אם יש קטליסט ידוע")
+        lines.append("\n✅ נוסף ל-DB כ-auto_discovery לסריקות עתידיות")
         send_telegram("\n\n".join(lines))
 
+        db.commit()
         db.close()
 
     except Exception as e:

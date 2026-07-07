@@ -209,23 +209,34 @@ BIOTECH_UNIVERSE = list(dict.fromkeys(BIOTECH_UNIVERSE))
 
 def scan_broad_biotech(
     iv_rank_threshold: float = 60.0,
-    max_tickers: int = 150,
+    max_tickers: int = 200,
     days_lookforward: int = 30,
+    db=None,
 ) -> list[dict]:
     """
     Scan the biotech universe for elevated IV rank + unusual options flow.
     Returns event-like dicts for tickers that look like upcoming catalysts.
 
-    Filters:
-        iv_rank >= iv_rank_threshold  (options are pricing in a big move)
-        30-day IV significantly above 52-week average
+    Universe is built dynamically:
+      - Hardcoded seed (always included as fallback)
+      - ETF constituents (XBI/IBB downloaded weekly)
+      - EDGAR recent 8-K filers (companies with active FDA news)
+      - DB-discovered tickers from past events + big movers
     """
     import yfinance as yf
     from datetime import datetime
 
     today = date.today()
     results = []
-    universe = BIOTECH_UNIVERSE[:max_tickers]
+
+    # Build dynamic universe
+    try:
+        from backend.scrapers.biotech_universe_builder import build_biotech_universe
+        universe = build_biotech_universe(db=db)[:max_tickers]
+        logger.info(f"Broad scan: dynamic universe = {len(universe)} tickers")
+    except Exception as e:
+        logger.warning(f"Dynamic universe failed, using seed: {e}")
+        universe = BIOTECH_UNIVERSE[:max_tickers]
 
     logger.info(f"Broad biotech scan: checking {len(universe)} tickers...")
 
