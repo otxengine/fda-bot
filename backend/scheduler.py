@@ -1896,21 +1896,8 @@ def create_scheduler() -> BackgroundScheduler:
         coalesce=True,
     )
 
-    # ── ALERT CHECK: score spikes, flow surges — every 15 min 8:00-20:00 EST ─
-    scheduler.add_job(
-        run_alert_check,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour="8-19",
-            minute="*/15",
-            timezone=EST,
-        ),
-        id="alert_check",
-        name="Alert Check (15min)",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    # Alert check (score_spike / flow_surge / iv_spike / cp_flip) disabled —
+    # too noisy; only BUY signals and outcome summaries are sent.
 
     # ── MORNING DIGEST: 8:30 AM EST, Mon-Fri ─────────────────────────────────
     scheduler.add_job(
