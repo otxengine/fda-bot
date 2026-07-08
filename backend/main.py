@@ -1321,3 +1321,12 @@ def trigger_early_watch():
     from backend.scheduler import run_early_watch_scan
     threading.Thread(target=run_early_watch_scan, daemon=True).start()
     return {"status": "early watch scan started"}
+
+
+@app.post("/api/background-tracking-now")
+def trigger_background_tracking():
+    """Manually trigger silent 8-14d baseline tracking scan."""
+    import threading
+    from backend.scheduler import run_background_tracking
+    threading.Thread(target=run_background_tracking, daemon=True).start()
+    return {"status": "background tracking started (8-14d window, no alerts)"}

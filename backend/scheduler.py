@@ -1657,6 +1657,78 @@ def run_missed_detector():
         logger.error(f"run_missed_detector failed: {e}")
 
 
+def run_background_tracking():
+    """
+    Silent background scan: store OptionsSignal for events 8-14 days out.
+    No alerts sent — only builds the historical baseline so that when the
+    event enters 0-7d window, the analyzer can compare C/P and IV rank
+    against the 14-day baseline to detect unusual institutional accumulation.
+    Runs twice daily (7:30 AM + 1:00 PM EST, Mon-Fri).
+    """
+    try:
+        from datetime import date, timedelta
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent, OptionsSignal
+        from backend.data.polygon import PolygonClient
+        from backend.data.yfinance_client import YFinanceClient
+        from backend.signals.analyzer import analyze_ticker
+
+        db = SessionLocal()
+        today        = date.today()
+        window_start = today + timedelta(days=8)
+        window_end   = today + timedelta(days=14)
+
+        events = db.query(FdaEvent).filter(
+            FdaEvent.event_date >= window_start,
+            FdaEvent.event_date <= window_end,
+            FdaEvent.ticker.isnot(None),
+        ).all()
+
+        if not events:
+            db.close()
+            logger.debug("Background tracking: no events in 8-14d window")
+            return
+
+        polygon   = PolygonClient()
+        yf_client = YFinanceClient()
+        scanned   = 0
+
+        seen = {}
+        for e in events:
+            if e.ticker not in seen:
+                seen[e.ticker] = e
+
+        for event in seen.values():
+            try:
+                result = analyze_ticker(
+                    ticker=event.ticker,
+                    polygon_client=polygon,
+                    yfinance_client=yf_client,
+                    event_date=event.event_date,
+                    event_type=event.event_type,
+                    drug_name=event.drug_name,
+                    company=event.company,
+                    db=db,
+                    fda_event_id=event.id,
+                )
+                if result:
+                    signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
+                    db.add(signal)
+                    scanned += 1
+            except Exception as e:
+                logger.debug(f"Background tracking {event.ticker}: {e}")
+
+        db.commit()
+        db.close()
+        logger.info(
+            f"Background tracking: stored {scanned} baseline signals "
+            f"({len(seen)} tickers, 8-14d window, no alerts)"
+        )
+
+    except Exception as e:
+        logger.error(f"run_background_tracking failed: {e}")
+
+
 def run_early_watch_scan():
     """
     Scan for institutional accumulation 1-4 days before FDA events.
@@ -1960,6 +2032,24 @@ def create_scheduler() -> BackgroundScheduler:
         ),
         id="already_moving_scan",
         name="Already-Moving FDA Scan (10min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── BACKGROUND TRACKING: 8-14d window, 7:30 AM + 1:00 PM EST Mon-Fri ────
+    # Silent scan — builds 14-day baseline for C/P and IV rank.
+    # No alerts. Data used by analyzer to detect unusual accumulation.
+    scheduler.add_job(
+        run_background_tracking,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="7,13",
+            minute="30,0",
+            timezone=EST,
+        ),
+        id="background_tracking",
+        name="Background Baseline Tracking 8-14d (2x daily)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

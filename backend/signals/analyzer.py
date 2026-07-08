@@ -361,6 +361,42 @@ def analyze_ticker(
         except Exception as e:
             logger.debug(f"Flow velocity error for {ticker}: {e}")
 
+    # ── 14-day baseline comparison ────────────────────────────────────────────
+    # Fetch the oldest stored signal from 6-14 days ago to use as baseline.
+    # Detects unusual C/P or IV acceleration vs the pre-event baseline.
+    baseline_cp    = None
+    baseline_iv    = None
+    cp_14d_chg_pct = None   # % change in C/P ratio over 14 days
+    iv_14d_chg     = None   # absolute change in IV rank over 14 days
+
+    if db and days_until <= 7:
+        try:
+            from backend.models import OptionsSignal as _OSB
+            from datetime import timedelta as _td
+            old_floor = datetime.utcnow() - _td(days=14)
+            old_ceil  = datetime.utcnow() - _td(days=6)
+            old_sig = (
+                db.query(_OSB)
+                .filter(
+                    _OSB.ticker == ticker,
+                    _OSB.scan_time >= old_floor,
+                    _OSB.scan_time <= old_ceil,
+                )
+                .order_by(_OSB.scan_time.asc())
+                .first()
+            )
+            if old_sig:
+                baseline_cp = old_sig.call_put_ratio
+                baseline_iv = old_sig.iv_rank
+                if baseline_cp and baseline_cp > 0:
+                    cp_14d_chg_pct = round(
+                        (scores["call_put_ratio"] - baseline_cp) / baseline_cp * 100, 0
+                    )
+                if baseline_iv is not None:
+                    iv_14d_chg = round(scores["iv_rank"] - baseline_iv, 0)
+        except Exception as e:
+            logger.debug(f"Baseline comparison error {ticker}: {e}")
+
     # ── Stock signal (0-7 day window for stock trading) ──────────────────────
     from datetime import timedelta
     stock_signal = "WATCH"
@@ -414,6 +450,16 @@ def analyze_ticker(
             score_threshold = 50
             cp_threshold    = 1.8
 
+        # Baseline acceleration boost: if C/P doubled+ over 14 days, lower thresholds
+        # This means smart money was accumulating before the event — stronger edge
+        if cp_14d_chg_pct is not None and cp_14d_chg_pct >= 100:
+            score_threshold = max(32, score_threshold - 8)
+            cp_threshold    = max(1.2, cp_threshold    - 0.3)
+            logger.info(
+                f"{ticker} baseline acceleration: C/P +{cp_14d_chg_pct:.0f}% over 14d "
+                f"→ thresholds lowered to score≥{score_threshold} C/P≥{cp_threshold}"
+            )
+
         # High C/P override: exceptional call flow overrides score threshold
         high_cp_override = cp_val >= 5.0 and score_val >= 35
         # Already-moving override: stock up 5%+ today AND event 0-1 days away
@@ -450,6 +496,11 @@ def analyze_ticker(
                 reasons.append("options נעוצות לאירוע")
             if binary_event_risk:
                 reasons.append("⚠️ סיכון בינארי — גודל קטן")
+            # 14-day baseline trends — shows accumulation history
+            if cp_14d_chg_pct is not None and cp_14d_chg_pct >= 50:
+                reasons.append(f"C/P: {baseline_cp:.1f}→{cp_val:.1f} (+{cp_14d_chg_pct:.0f}% ב-14d)")
+            if iv_14d_chg is not None and iv_14d_chg >= 15:
+                reasons.append(f"IV עלה +{iv_14d_chg:.0f}pt ב-14d")
             stock_signal_reason = " | ".join(reasons)
 
         elif (standard_buy or high_cp_override) and liquidity_warning:
