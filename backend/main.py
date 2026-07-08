@@ -550,8 +550,21 @@ def scan_and_alert():
                 FdaEvent.ticker.isnot(None),
             ).all()
 
+            # Real FDA sources — skip broad_scan/iv placeholders entirely
+            REAL_SOURCES = {
+                "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
+                "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
+            }
+
+            # Deduplicate: one real event per ticker (prefer real source, then earliest)
+            seen_tickers: dict = {}
+            for e in sorted(events, key=lambda x: (0 if x.source in REAL_SOURCES else 1, x.event_date)):
+                if e.ticker not in seen_tickers:
+                    seen_tickers[e.ticker] = e
+            real_events = [e for e in seen_tickers.values() if e.source in REAL_SOURCES]
+
             buy_signals = []
-            for event in events:
+            for event in real_events:
                 result = analyze_ticker(
                     ticker=event.ticker,
                     polygon_client=polygon,
@@ -569,15 +582,6 @@ def scan_and_alert():
                 db.add(signal)
 
                 days_until = (event.event_date - today).days
-                # Only alert for events within 0-7 day catalyst window
-                # Skip if already alerted in last 4 hours (cooldown)
-                # Skip BUY alerts for IV-placeholder events (broad_scan/iv)
-                REAL_SOURCES = {
-                    "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
-                    "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
-                }
-                if event.source not in REAL_SOURCES:
-                    continue
 
                 if result.get("stock_signal") == "BUY" and 0 <= days_until <= 7:
                     from datetime import datetime, timedelta as td
