@@ -571,6 +571,14 @@ def scan_and_alert():
                 days_until = (event.event_date - today).days
                 # Only alert for events within 0-7 day catalyst window
                 # Skip if already alerted in last 4 hours (cooldown)
+                # Skip BUY alerts for IV-placeholder events (broad_scan/iv)
+                REAL_SOURCES = {
+                    "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
+                    "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
+                }
+                if event.source not in REAL_SOURCES:
+                    continue
+
                 if result.get("stock_signal") == "BUY" and 0 <= days_until <= 7:
                     from datetime import datetime, timedelta as td
                     cooldown_cutoff = datetime.utcnow() - td(hours=4)
