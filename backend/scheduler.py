@@ -296,9 +296,21 @@ def run_realtime_scan(days_window: int = 7):
 
         buy_signals = []
 
+        # Sources that represent real FDA/catalyst events (not IV-detected placeholders)
+        REAL_SOURCES = {
+            "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
+            "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
+        }
+
         for result in signals:
             ticker = result.get("ticker")
             if not ticker:
+                continue
+
+            # Skip BUY alerts for tickers whose only event is a broad_scan/iv placeholder
+            event_source = result.get("_event_source", "")
+            if event_source and event_source not in REAL_SOURCES:
+                logger.debug(f"Skipping BUY alert for {ticker} — source={event_source} (IV placeholder only)")
                 continue
 
             # Cooldown check

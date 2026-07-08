@@ -216,18 +216,36 @@ def scan_all_events(
     today = date.today()
     cutoff = today + timedelta(days=days_window)
 
-    events = db.query(FdaEvent).filter(
+    # Real FDA sources only — broad_scan/iv are IV-detected placeholders, not real events
+    REAL_SOURCES = {
+        "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
+        "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
+    }
+
+    all_events = db.query(FdaEvent).filter(
         FdaEvent.event_date >= today,
         FdaEvent.event_date <= cutoff,
         FdaEvent.ticker.isnot(None),
     ).all()
 
-    if not events:
+    if not all_events:
         return []
 
-    # Deduplicate tickers — take earliest event per ticker
+    # Prefer real-source events; fall back to broad_scan/iv only if no real event exists
+    real_events = [e for e in all_events if e.source in REAL_SOURCES]
+    iv_only     = [e for e in all_events if e.source not in REAL_SOURCES]
+
+    # Tickers that have at least one real event
+    real_tickers = {e.ticker for e in real_events}
+
+    # For tickers with NO real event, keep their iv-placeholder so data is still collected
+    # but mark them — they won't generate BUY alerts (filtered in scheduler)
+    events = real_events + [e for e in iv_only if e.ticker not in real_tickers]
+
+    # Deduplicate tickers — prefer real-source events, then earliest date
+    SOURCE_RANK = {s: 0 for s in REAL_SOURCES}   # 0 = real, 1 = iv placeholder
     seen: dict[str, object] = {}
-    for e in sorted(events, key=lambda x: x.event_date):
+    for e in sorted(events, key=lambda x: (SOURCE_RANK.get(x.source, 1), x.event_date)):
         if e.ticker not in seen:
             seen[e.ticker] = e
     unique_events = list(seen.values())
@@ -248,6 +266,7 @@ def scan_all_events(
             yfinance_client=yfinance_client,
         )
         if sig and sig.get("stock_signal") == "BUY":
+            sig["_event_source"] = event.source   # passed to scheduler for filtering
             results.append(sig)
 
     results.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
