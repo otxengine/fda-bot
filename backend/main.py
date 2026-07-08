@@ -820,19 +820,30 @@ def send_all_outcomes(db: Session = Depends(get_db)):
     return {"status": "ok", "sending": len(to_notify), "already_sent": len(results) - len(to_notify)}
 
 
+REAL_FDA_SOURCES = {
+    "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
+    "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
+}
+
+
 @app.get("/api/stock-signals")
 def get_stock_signals(db: Session = Depends(get_db)):
-    """Return latest BUY stock signals (0-7 day FDA window)."""
+    """Return latest BUY stock signals (0-7 day FDA window, real sources only)."""
     today = date.today()
     cutoff = today + timedelta(days=7)
 
-    events = {
-        e.ticker: e for e in db.query(FdaEvent).filter(
-            FdaEvent.event_date >= today,
-            FdaEvent.event_date <= cutoff,
-            FdaEvent.ticker.isnot(None),
-        ).all()
-    }
+    # Only real FDA events — exclude broad_scan/iv IV-detected placeholders
+    all_events = db.query(FdaEvent).filter(
+        FdaEvent.event_date >= today,
+        FdaEvent.event_date <= cutoff,
+        FdaEvent.ticker.isnot(None),
+        FdaEvent.source.in_(REAL_FDA_SOURCES),
+    ).all()
+    # One event per ticker (earliest real event)
+    events = {}
+    for e in sorted(all_events, key=lambda x: x.event_date):
+        if e.ticker not in events:
+            events[e.ticker] = e
 
     from sqlalchemy import func
     latest_ids = (
