@@ -328,7 +328,12 @@ def analyze_ticker(
         entry_window = "monitor"     # just tracking
 
     # ── A3: Liquidity gate + IV crush warning ─────────────────────────────────
-    liquidity_warning = bool(total_volume < 100 or total_oi < 500)
+    # Day trades (0-2d): volume today matters more than historical OI.
+    # Lesson 2026-07-10: OI=500 gate blocked NRIX (OI=165, +9.9%) and FATE.
+    if days_until <= 2:
+        liquidity_warning = bool(total_volume < 100 or total_oi < 100)
+    else:
+        liquidity_warning = bool(total_volume < 100 or total_oi < 500)
     iv_crush_warning  = bool(scores["iv_rank"] > 75 and days_until <= 3)
 
     # ── A4: Earnings overlap ──────────────────────────────────────────────────
