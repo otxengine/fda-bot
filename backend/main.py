@@ -48,15 +48,47 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     init_db()
 
-    # Run initial FDA scrape on startup if DB is empty
-    db = SessionLocal()
-    event_count = db.query(FdaEvent).count()
-    db.close()
+    # Always run BPC quick scrape on startup to refresh events
+    import threading
+    def _startup_scrape():
+        import time
+        time.sleep(5)  # let server fully initialize first
+        try:
+            from backend.scrapers.biopharmcatalyst import scrape_biopharmcatalyst
+            from backend.models import FdaEvent as _FE
+            db2 = SessionLocal()
+            events = scrape_biopharmcatalyst()
+            added = 0
+            for ev in events:
+                if not ev.get("ticker") or not ev.get("event_date"):
+                    continue
+                exists = db2.query(_FE).filter(
+                    _FE.ticker == ev["ticker"],
+                    _FE.event_date == ev["event_date"],
+                ).first()
+                if not exists:
+                    db2.add(_FE(
+                        ticker=ev["ticker"], company=ev.get("company"),
+                        event_type=ev.get("event_type"), drug_name=ev.get("drug_name"),
+                        event_date=ev["event_date"], source="biopharmcatalyst",
+                    ))
+                    added += 1
+            db2.commit()
+            db2.close()
+            logger.info(f"Startup BPC scrape: {added} new events added ({len(events)} total)")
+        except Exception as e:
+            logger.warning(f"Startup BPC scrape failed: {e}")
 
-    if event_count == 0:
-        logger.info("No events in DB - running initial FDA scrape...")
-        run_fda_scrape()
-        run_options_scan(force=True)  # bypass market hours on first run
+        # If DB is empty (fresh deploy), run full scrape + scan
+        db3 = SessionLocal()
+        event_count2 = db3.query(FdaEvent).count()
+        db3.close()
+        if event_count2 < 10:
+            logger.info("Very few events in DB - running full initial scrape...")
+            run_fda_scrape()
+            run_options_scan(force=True)
+
+    threading.Thread(target=_startup_scrape, daemon=True).start()
 
     # Seed historical data on startup if table is empty
     hist_db = SessionLocal()

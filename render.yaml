@@ -19,4 +19,4 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: SCANNER_API_URL
-        sync: false
+        value: https://fda-bot.onrender.com

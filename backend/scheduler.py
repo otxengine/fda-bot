@@ -25,6 +25,63 @@ def is_market_hours() -> bool:
     return market_open <= current_time <= market_close
 
 
+
+def run_keepalive():
+    """
+    Self-ping every 10 min to prevent Render from sleeping.
+    Also triggers BPC quick scrape if market is open.
+    """
+    import os, urllib.request, datetime as _dt
+    try:
+        url = os.getenv('SCANNER_API_URL', 'http://localhost:8000')
+        # Ping health endpoint
+        req = urllib.request.Request(url.rstrip('/') + '/api/status', method='GET')
+        req.add_header('User-Agent', 'fda-bot-keepalive/1.0')
+        urllib.request.urlopen(req, timeout=10)
+        logger.debug('Keep-alive ping OK')
+    except Exception as e:
+        logger.debug(f'Keep-alive ping failed (ok): {e}')
+
+
+def run_bpc_quick_scrape():
+    """
+    Fast BPC-only scrape every 30 min during market hours.
+    Much faster than full run_fda_scrape (no EDGAR/multi-source).
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.models import FdaEvent
+        from backend.scrapers.biopharmcatalyst import scrape_biopharmcatalyst
+
+        db = SessionLocal()
+        events = scrape_biopharmcatalyst()
+        added = 0
+        for ev in events:
+            if not ev.get('ticker') or not ev.get('event_date'):
+                continue
+            exists = db.query(FdaEvent).filter(
+                FdaEvent.ticker == ev['ticker'],
+                FdaEvent.event_date == ev['event_date'],
+            ).first()
+            if not exists:
+                db.add(FdaEvent(
+                    ticker=ev['ticker'],
+                    company=ev.get('company'),
+                    event_type=ev.get('event_type'),
+                    drug_name=ev.get('drug_name'),
+                    event_date=ev['event_date'],
+                    source='biopharmcatalyst',
+                ))
+                added += 1
+        db.commit()
+        db.close()
+        if added:
+            logger.info(f'BPC quick scrape: {added} new events added')
+            # Immediately scan any new tickers within 7 days
+            run_focused_scan()
+    except Exception as e:
+        logger.error(f'BPC quick scrape failed: {e}')
+
 def run_fda_scrape():
     """
     Job: scrape FDA calendar (BPC v1 + all sources) and update events table.
@@ -1922,12 +1979,38 @@ def create_scheduler() -> BackgroundScheduler:
     """
     scheduler = BackgroundScheduler(timezone=EST)
 
-    # ── 24/7: FDA event scrape every 2 hours ──────────────────────────────────
+    # ── 24/7: Keep-alive ping every 10 min (prevents Render from sleeping) ──
+    scheduler.add_job(
+        run_keepalive,
+        trigger=IntervalTrigger(minutes=10),
+        id="keepalive",
+        name="Keep-Alive Ping (10min, 24/7)",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # ── Market hours: BPC quick scrape every 30 min (Mon-Fri 7:00-22:00 EST) ─
+    scheduler.add_job(
+        run_bpc_quick_scrape,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="7-21",
+            minute="*/30",
+            timezone=EST,
+        ),
+        id="bpc_quick_scrape",
+        name="BPC Quick Scrape (30min, market hours)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── 24/7: Full FDA event scrape every 1 hour (was 2h) ────────────────────
     scheduler.add_job(
         run_fda_scrape,
-        trigger=IntervalTrigger(hours=2),
+        trigger=IntervalTrigger(hours=1),
         id="fda_scrape",
-        name="FDA Event Scrape (2h, 24/7)",
+        name="FDA Event Scrape (1h, 24/7)",
         replace_existing=True,
         max_instances=1,
     )
