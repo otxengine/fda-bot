@@ -473,6 +473,8 @@ def analyze_ticker(
         standard_buy = score_val >= score_threshold and cp_val >= cp_threshold
         # Penny stock: price < $0.50 — options flow unreliable
         penny_stock = bool(stock_price and stock_price < 0.50)
+        # Hard block: C/P < 1.0 means puts dominate — never BUY (lesson: IONS -32.8% Jul 2026)
+        bearish_flow = cp_val < 1.0 and cp_val > 0
 
         if penny_stock:
             stock_signal = "WATCH"
@@ -480,7 +482,7 @@ def analyze_ticker(
             entry_price_val = None
             stop_loss_price_val = None
 
-        elif (standard_buy or high_cp_override or moving_override) and not liquidity_warning:
+        elif (standard_buy or high_cp_override or moving_override) and not liquidity_warning and not bearish_flow:
             stock_signal = "BUY"
             reasons = []
             if trade_type == "day":
@@ -508,7 +510,7 @@ def analyze_ticker(
                 reasons.append(f"IV עלה +{iv_14d_chg:.0f}pt ב-14d")
             stock_signal_reason = " | ".join(reasons)
 
-        elif (standard_buy or high_cp_override) and liquidity_warning:
+        elif (standard_buy or high_cp_override) and liquidity_warning and not bearish_flow:
             stock_signal = "WATCH"
             stock_signal_reason = f"signal ok (score {score_val:.0f}, C/P {cp_val:.1f}) — נזילות נמוכה"
 
