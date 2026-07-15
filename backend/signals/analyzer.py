@@ -448,12 +448,14 @@ def analyze_ticker(
         # Thresholds differ by trade type
         # Day trade (0-2d): lower score bar — proximity IS the edge
         # Swing trade (3-7d): standard bar
+        # Lesson 2026-07-15: C/P is best predictor. Raised cp_threshold.
+        # avg C/P wins=5.35 vs losses=1.52 — C/P < 2.0 = low confidence.
         if trade_type == "day":
             score_threshold = 42
-            cp_threshold    = 1.5
+            cp_threshold    = 2.0    # raised from 1.5 (lesson: low C/P = losses)
         else:
             score_threshold = 50
-            cp_threshold    = 1.8
+            cp_threshold    = 2.0    # raised from 1.8
 
         # Baseline acceleration boost: if C/P doubled+ over 14 days, lower thresholds
         # This means smart money was accumulating before the event — stronger edge
