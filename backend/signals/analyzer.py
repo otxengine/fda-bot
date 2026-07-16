@@ -468,11 +468,17 @@ def analyze_ticker(
             )
 
         # High C/P override: exceptional call flow overrides score threshold
-        high_cp_override = cp_val >= 5.0 and score_val >= 35
+        # Lesson 2026-07-16: C/P > 8 = thin market distortion, NOT institutional conviction
+        # OABI C/P=11.25 → -9.2%, RLMD C/P=23 → -4.6% (thin market inflated ratio)
+        suspicious_high_cp = cp_val > 8.0
+        high_cp_override = cp_val >= 5.0 and cp_val <= 8.0 and score_val >= 35
         # Already-moving override: stock up 5%+ today AND event 0-1 days away
         moving_override = already_moving and today_change_pct >= 5.0 and days_until <= 1
-        # BUY criteria
-        standard_buy = score_val >= score_threshold and cp_val >= cp_threshold
+        # BUY criteria — C/P > 8 requires higher score (65+) to compensate for thin-market risk
+        if suspicious_high_cp:
+            standard_buy = score_val >= max(score_threshold + 15, 65) and cp_val >= cp_threshold
+        else:
+            standard_buy = score_val >= score_threshold and cp_val >= cp_threshold
         # Penny stock: price < $0.50 — options flow unreliable
         penny_stock = bool(stock_price and stock_price < 0.50)
         # Hard block: C/P < 1.0 means puts dominate — never BUY (lesson: IONS -32.8% Jul 2026)
@@ -505,6 +511,8 @@ def analyze_ticker(
                 reasons.append("options נעוצות לאירוע")
             if binary_event_risk:
                 reasons.append("⚠️ סיכון בינארי — גודל קטן")
+            if suspicious_high_cp:
+                reasons.append(f"⚠️ C/P={cp_val:.0f} חשוד (שוק דליל) — הורד גודל")
             # 14-day baseline trends — shows accumulation history
             if cp_14d_chg_pct is not None and cp_14d_chg_pct >= 50:
                 reasons.append(f"C/P: {baseline_cp:.1f}→{cp_val:.1f} (+{cp_14d_chg_pct:.0f}% ב-14d)")
@@ -654,6 +662,7 @@ def analyze_ticker(
         "_neg_penalty":       neg_penalty,
         "_neg_reason":        neg_reason,
         "_learned_wadj":      learned_wadj,
+        "_suspicious_high_cp": suspicious_high_cp,  # C/P > 8 = thin market warning
         # internal (not stored)
         "_component_scores":  scores["component_scores"],
         "_weights":           scores["weights"],
