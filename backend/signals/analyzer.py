@@ -1,12 +1,13 @@
 """
-Signal scoring engine v2 — expiration-aware + probability calibrated.
+Signal scoring engine v3 — C/P-emphasis update (2026-08-05).
 
 Composite score weights:
-  expiration_score  35%  (NEW — most important)
-  iv_rank           20%
-  call_put          20%
-  vol_oi            15%
-  premium_flow      10%
+  expiration_score  25%  (reduced — C/P is stronger predictor)
+  call_put          22%  (raised — wins avg C/P=5.35 vs losses=1.52)
+  fundamental       17%  (raised — clinical quality matters)
+  iv_rank           15%  (reduced)
+  vol_oi            13%
+  premium_flow       8%
 """
 import json
 import logging
@@ -16,12 +17,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Score weights (must sum to 100)
-WEIGHT_EXPIRATION   = 30
-WEIGHT_IV_RANK      = 17
-WEIGHT_CALL_PUT     = 17
+WEIGHT_EXPIRATION   = 25   # reduced: C/P is stronger predictor than expiry concentration
+WEIGHT_IV_RANK      = 15   # reduced
+WEIGHT_CALL_PUT     = 22   # raised: best predictor (wins avg 5.35 vs losses 1.52)
 WEIGHT_VOL_OI       = 13
 WEIGHT_PREMIUM      = 8
-WEIGHT_FUNDAMENTAL  = 15
+WEIGHT_FUNDAMENTAL  = 17   # raised: clinical quality + cash runway important
 
 THRESHOLD_RED    = 70
 THRESHOLD_ORANGE = 50
@@ -42,12 +43,24 @@ def score_iv_rank(iv_rank: float) -> float:
 
 
 def score_call_put(call_vol: float, put_vol: float) -> float:
+    """
+    Non-linear C/P scoring calibrated from outcome data (2026-08-05).
+    Wins avg C/P=5.35 vs losses avg C/P=1.52 → steeper penalty below 2.0.
+      ratio <1.0  → 0-25  (bearish, heavy penalty)
+      ratio 1-2   → 25-45 (weak/neutral zone)
+      ratio 2-5+  → 45-100 (signal zone, steep reward)
+    """
     if put_vol <= 0:
         return 100.0 if call_vol > 0 else 50.0
     ratio = call_vol / put_vol
-    if ratio < 1:
-        return max(0.0, ratio * 50)
-    return min(100.0, 50.0 + (ratio - 1) / (CALL_PUT_CAP - 1) * 50.0)
+    if ratio < 1.0:
+        # Bearish zone: C/P<1 almost never wins → heavy penalty
+        return max(0.0, ratio * 25)
+    if ratio < 2.0:
+        # Weak zone: C/P 1-2 is below our threshold of 2.0
+        return 25.0 + (ratio - 1.0) * 20.0
+    # Signal zone: C/P 2.0+ — strong bullish flow
+    return min(100.0, 45.0 + (ratio - 2.0) / (CALL_PUT_CAP - 2.0) * 55.0)
 
 
 def score_premium(premium: float) -> float:
@@ -310,6 +323,7 @@ def analyze_ticker(
             composite_score=scores["composite_score"],
             event_type=event_type,
             event_pinned_ratio=exp_result["event_pinned_ratio"],
+            call_put_ratio=scores["call_put_ratio"],
             db=db,
         )
     except Exception as e:
@@ -540,7 +554,7 @@ def analyze_ticker(
         # Lower thresholds — catch it BEFORE the price action starts
         elif (1 <= days_until <= 4
               and cp_val >= 1.2
-              and iv_val >= 40
+              and scores["iv_rank"] >= 40
               and score_val >= 25
               and today_change_pct < 3.0   # stock hasn't moved yet
               and not liquidity_warning):
@@ -570,6 +584,7 @@ def analyze_ticker(
                 reasons.append(f"יחס עולה ({prev_cp_val:.1f}→{cp_val:.1f})")
             if today_change_pct < 1.0:
                 reasons.append("מניה עוד לא זזה")
+            reasons.append(f"IV rank {scores['iv_rank']:.0f}")
             stock_signal_reason = " | ".join(reasons)
             entry_price_val = stock_price if stock_price else None
             stop_loss_price_val = round(stock_price * 0.93, 2) if stock_price else None  # 7% stop
@@ -588,6 +603,10 @@ def analyze_ticker(
         "event_pinned_ratio": exp_result["event_pinned_ratio"],
         "iv_rank":            scores["iv_rank"],
         "best_expiry":        exp_result["best_expiry"],
+        "binary_event_risk":  binary_event_risk,
+        "suspicious_high_cp": suspicious_high_cp,
+        "event_type":         event_type or "",
+        "days_until":         days_until,
     }
     try:
         from backend.signals.trade_recommender import recommend

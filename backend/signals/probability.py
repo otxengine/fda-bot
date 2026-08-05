@@ -153,6 +153,7 @@ def compute_probability(
     composite_score: float,
     event_type: Optional[str] = None,
     event_pinned_ratio: float = 0.0,
+    call_put_ratio: float = 1.0,
     db=None,
 ) -> dict:
     """
@@ -177,6 +178,26 @@ def compute_probability(
     # 2. Adjust by event-pinned ratio (only boosts bullish when signal is high)
     if composite_score >= 50:
         up_mult *= _pinned_boost(event_pinned_ratio)
+
+    # 3. Adjust by C/P ratio — strongest empirical predictor
+    # Wins avg C/P=5.35 vs losses avg C/P=1.52 (n=27, Jul 2026)
+    cp = max(0.0, call_put_ratio)
+    if cp >= 5.0:
+        up_mult   *= 1.25
+        down_mult *= 0.75
+    elif cp >= 3.0:
+        up_mult   *= 1.12
+        down_mult *= 0.88
+    elif cp >= 2.0:
+        up_mult   *= 1.05
+        down_mult *= 0.95
+    elif cp < 1.0:
+        # Bearish flow dominates — reverse direction
+        up_mult   *= 0.65
+        down_mult *= 1.35
+    elif cp < 1.5:
+        up_mult   *= 0.85
+        down_mult *= 1.15
 
     p_up5_adj   = _clamp(base["p_up5"]   * up_mult)
     p_up10_adj  = _clamp(base["p_up10"]  * up_mult)

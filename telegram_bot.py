@@ -188,9 +188,13 @@ def build_signals_message(days=30):
         em_str = f"±{em:.1f}%" if em is not None else ""
         strat = s.get("recommended_strategy", "")
         s_e = STRATEGY_EMOJI.get(strat, "")
+        cp = s.get("call_put_ratio")
+        cp_str = f"C/P {cp:.1f}" if cp is not None else ""
+        # Warn on suspicious high C/P (>8) or bearish C/P (<1)
+        cp_flag = " ⚠️" if cp is not None and (cp > 8 or cp < 1) else ""
         lines.append(
             f"{dot} <b>{s['ticker']}</b> {s_e}  score={score_str}  "
-            f"{ew_e}{ew}  {em_str}  {s['days_until']}d"
+            f"{cp_str}{cp_flag}  {ew_e}{ew}  {em_str}  {s['days_until']}d"
         )
     return "\n".join(lines)
 
@@ -220,6 +224,44 @@ def build_ideas_message():
     return "\n\n".join(lines)
 
 
+def build_winrate_message():
+    """Build C/P bucket win-rate table from backend performance API."""
+    data = api_get("/api/performance")
+    cp_buckets = data.get("cp_buckets", [])
+    overall    = data.get("overall", {})
+
+    if not cp_buckets:
+        return (
+            "📊 <b>Win Rate by C/P Ratio</b>\n\n"
+            "אין מספיק נתונים היסטוריים עדיין.\n"
+            "הנתונים יצטברו לאחר מספר אירועי FDA."
+        )
+
+    lines = ["📊 <b>Win Rate by C/P Ratio</b>\n"]
+    lines.append("<code>C/P Range   | N  | Win% | Avg Chg</code>")
+    lines.append("<code>──────────────────────────────────</code>")
+
+    for b in cp_buckets:
+        n = b.get("n", 0)
+        if n == 0:
+            continue
+        bucket   = b.get("bucket", "?")
+        win_rate = b.get("win_rate", 0)
+        avg_chg  = b.get("avg_change", 0)
+        bar = "🟢" if win_rate >= 55 else "🟡" if win_rate >= 45 else "🔴"
+        lines.append(
+            f"<code>{bucket:<11} | {n:<3}| {win_rate:>3}% | {avg_chg:>+.1f}%</code> {bar}"
+        )
+
+    if overall:
+        n_total  = overall.get("n", 0)
+        overall_wr = overall.get("win_rate", "?")
+        lines.append(f"\n<b>Overall:</b> {overall_wr}% מתוך {n_total} עסקאות")
+        lines.append("\n<i>Win% = אחוז אירועים עם עלייה >3% ביום לאחר</i>")
+
+    return "\n".join(lines)
+
+
 def build_status_message():
     data = api_get("/api/status")
     if not data:
@@ -243,6 +285,7 @@ async def cmd_start(update, context):
         "פקודות זמינות:\n"
         "/signals — סיגנלים נוכחיים\n"
         "/ideas   — המלצות עסקאות\n"
+        "/winrate — אחוז הצלחה לפי C/P\n"
         "/status  — סטטוס מערכת\n"
         "/help    — עזרה",
         parse_mode="HTML",
@@ -254,21 +297,28 @@ async def cmd_signals(update, context):
 async def cmd_ideas(update, context):
     await update.message.reply_text(build_ideas_message(), parse_mode="HTML")
 
+async def cmd_winrate(update, context):
+    await update.message.reply_text(build_winrate_message(), parse_mode="HTML")
+
 async def cmd_status(update, context):
     await update.message.reply_text(build_status_message(), parse_mode="HTML")
 
 async def cmd_help(update, context):
     await update.message.reply_text(
         "📖 <b>פקודות</b>\n\n"
-        "/signals — רשימת סיגנלים לפי סקור\n"
+        "/signals — רשימת סיגנלים לפי סקור (כולל C/P ratio)\n"
         "/ideas   — המלצות Long Call / Put / Straddle\n"
+        "/winrate — אחוז הצלחה היסטורי לפי טווח C/P\n"
         "/status  — מצב השרת\n\n"
-        "אלרטים אוטומטיים נשלחים כש:\n"
+        "<b>אלרטים אוטומטיים נשלחים כש:</b>\n"
         "• סקור קופץ 15+ נקודות\n"
         "• flow velocity > 80%\n"
         "• IV rank חוצה 80\n"
         "• C/P ratio חוצה 3.0\n"
-        "• המלצת עסקה חדשה (high/medium conviction)",
+        "• המלצת עסקה חדשה (high/medium conviction)\n\n"
+        "<b>C/P flags בסיגנלים:</b>\n"
+        "• ⚠️ = C/P חשוד (>8 = שוק דליל, או <1 = bearish flow)\n"
+        "• C/P ≥2.0 = threshold מינימלי לאות BUY",
         parse_mode="HTML",
     )
 
@@ -287,6 +337,7 @@ def run_bot():
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("signals", cmd_signals))
     app.add_handler(CommandHandler("ideas",   cmd_ideas))
+    app.add_handler(CommandHandler("winrate", cmd_winrate))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("help",    cmd_help))
     app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))

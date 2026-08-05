@@ -1293,14 +1293,28 @@ def get_performance(db: Session = Depends(get_db)):
             "hit_1d":      bool(o.was_hit_1d),
         })
 
+    # C/P bucket win-rate breakdown — best empirical predictor
+    cp_buckets = []
+    try:
+        from backend.signals.learning_engine import get_cp_bucket_stats
+        cp_buckets = get_cp_bucket_stats(db)
+    except Exception:
+        pass
+
+    n_total = len(with_1d)
+    overall_win_rate = round(hit_1d / n_total * 100, 1) if n_total > 0 else None
+
     return {
         "total_alerts_tracked": total,
         "overall": {
-            "hit_rate_1d_pct": round(hit_1d / len(with_1d) * 100, 1) if with_1d else None,
+            "n":               n_total,
+            "win_rate":        overall_win_rate,
+            "hit_rate_1d_pct": overall_win_rate,
             "hit_rate_3d_pct": round(hit_3d / len(with_3d) * 100, 1) if with_3d else None,
             "avg_return_1d":   safe_avg(with_1d, "change_1d_pct"),
             "avg_return_3d":   safe_avg(with_3d, "change_3d_pct"),
         },
+        "cp_buckets":      cp_buckets,
         "by_alert_type":   type_stats,
         "outcome_labels":  label_counts,
         "recent_outcomes": recent_list,

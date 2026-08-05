@@ -182,26 +182,66 @@ def analyze_outcome_patterns(db) -> Optional[dict]:
 
     correct = sum(
         1 for r in records
-        if (r.pre_event_call_put_ratio or 1) >= 1.8
+        if (r.pre_event_call_put_ratio or 1) >= 2.0
         and (r.change_1d_pct or 0) > 3
     )
-    total_bullish = sum(1 for r in records if (r.pre_event_call_put_ratio or 1) >= 1.8)
+    total_bullish = sum(1 for r in records if (r.pre_event_call_put_ratio or 1) >= 2.0)
     accuracy = round(correct / total_bullish * 100) if total_bullish > 0 else 50
+
+    # C/P bucket breakdown for pattern analysis
+    cp_buckets = {
+        "<1.0":  [],
+        "1.0-2.0": [],
+        "2.0-3.5": [],
+        "3.5-5.0": [],
+        "5.0-8.0": [],
+        ">8.0":  [],
+    }
+    for r in records:
+        cp = r.pre_event_call_put_ratio or 1.0
+        chg = r.change_1d_pct or 0
+        if cp < 1.0:
+            cp_buckets["<1.0"].append(chg)
+        elif cp < 2.0:
+            cp_buckets["1.0-2.0"].append(chg)
+        elif cp < 3.5:
+            cp_buckets["2.0-3.5"].append(chg)
+        elif cp < 5.0:
+            cp_buckets["3.5-5.0"].append(chg)
+        elif cp <= 8.0:
+            cp_buckets["5.0-8.0"].append(chg)
+        else:
+            cp_buckets[">8.0"].append(chg)
+
+    bucket_summary_lines = []
+    for bucket, changes in cp_buckets.items():
+        if not changes:
+            continue
+        n_b = len(changes)
+        win_rate = round(sum(1 for c in changes if c > 3) / n_b * 100)
+        avg_chg = round(sum(changes) / n_b, 1)
+        bucket_summary_lines.append(
+            f"  C/P {bucket}: n={n_b}, win_rate={win_rate}%, avg_chg={avg_chg:+.1f}%"
+        )
+    bucket_summary = "\n".join(bucket_summary_lines) if bucket_summary_lines else "  (no data)"
 
     prompt = f"""You are a quantitative analyst improving a biotech FDA catalyst trading signal system.
 
 The system scores stocks 0-100 using these components:
-- expiration_score (30%): how concentrated options volume is near the FDA event date
-- iv_rank (17%): implied volatility rank 0-100
-- call_put (17%): call/put volume ratio (bullish flow)
+- expiration_score (25%): how concentrated options volume is near the FDA event date
+- call_put (22%): call/put volume ratio — MOST IMPORTANT based on empirical data
+- fundamental (17%): cash runway, analyst consensus, clinical trial quality
+- iv_rank (15%): implied volatility rank 0-100
 - vol_oi (13%): volume/open-interest ratio
 - premium (8%): dollar premium flow
-- fundamental (15%): cash runway, analyst consensus, clinical trial quality
 
 Recent {len(records)} outcomes (pre-event signal → 1-day price change after FDA event):
 {chr(10).join(rows[:40])}
 
-Current bullish signal accuracy (C/P≥1.8 predicted +3%): {accuracy}% of {total_bullish} bullish signals
+C/P ratio breakdown by bucket:
+{bucket_summary}
+
+Current bullish signal accuracy (C/P≥2.0 predicted +3%): {accuracy}% of {total_bullish} bullish signals
 
 Analyze what patterns predicted correct outcomes and respond ONLY with JSON:
 {{
@@ -362,6 +402,57 @@ def build_learning_digest(insights: dict) -> str:
         msg += f"\n\n<i>{summ}</i>"
 
     return msg
+
+
+# ── 5. C/P bucket win-rate stats ───────────────────────────────────────────────
+
+def get_cp_bucket_stats(db) -> list[dict]:
+    """
+    Return win-rate table bucketed by C/P ratio range.
+    Used by /winrate Telegram command.
+    """
+    from backend.models import HistoricalResult
+
+    try:
+        records = db.query(HistoricalResult).filter(
+            HistoricalResult.pre_event_call_put_ratio.isnot(None),
+            HistoricalResult.change_1d_pct.isnot(None),
+        ).all()
+
+        buckets = [
+            ("<1.0",   0.0, 1.0),
+            ("1.0-2.0", 1.0, 2.0),
+            ("2.0-3.5", 2.0, 3.5),
+            ("3.5-5.0", 3.5, 5.0),
+            ("5.0-8.0", 5.0, 8.0),
+            (">8.0",   8.0, 9999),
+        ]
+
+        result = []
+        for label, lo, hi in buckets:
+            group = [
+                r for r in records
+                if lo <= (r.pre_event_call_put_ratio or 0) < hi
+            ]
+            n = len(group)
+            if n == 0:
+                result.append({"bucket": label, "n": 0})
+                continue
+            changes = [r.change_1d_pct for r in group]
+            win_rate = round(sum(1 for c in changes if c > 3) / n * 100)
+            avg_chg  = round(sum(changes) / n, 1)
+            result.append({
+                "bucket":    label,
+                "n":         n,
+                "win_rate":  win_rate,
+                "avg_change": avg_chg,
+            })
+
+        return result
+
+    except Exception as e:
+        logger.error(f"C/P bucket stats error: {e}")
+        return []
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
