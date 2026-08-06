@@ -1240,8 +1240,21 @@ def get_performance(db: Session = Depends(get_db)):
 
     outcomes = db.query(AlertOutcome).all()
 
+    # Always include C/P bucket stats (from HistoricalResult — available immediately)
+    cp_buckets = []
+    try:
+        from backend.signals.learning_engine import get_cp_bucket_stats
+        cp_buckets = get_cp_bucket_stats(db)
+    except Exception:
+        pass
+
     if not outcomes:
-        return {"message": "No outcome data yet. Outcomes are tracked daily after market close.", "total": 0}
+        return {
+            "message":   "No outcome data yet. Outcomes are tracked daily after market close.",
+            "total":     0,
+            "cp_buckets": cp_buckets,
+            "overall":   {"n": 0, "win_rate": None},
+        }
 
     # Overall stats
     total = len(outcomes)

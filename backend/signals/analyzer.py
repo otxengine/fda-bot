@@ -421,6 +421,8 @@ def analyze_ticker(
     stock_signal = "WATCH"
     stock_signal_reason = ""
     trade_type = "swing"   # "day" for 0-2d, "swing" for 3-7d
+    # Initialize suspicious_high_cp before the 0-7d block (used in signal_snapshot below)
+    suspicious_high_cp = scores["call_put_ratio"] > 8.0
 
     # Stop loss: tighter for day trades (5%), standard for swing (8%)
     if days_until <= 2:
