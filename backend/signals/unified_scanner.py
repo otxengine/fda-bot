@@ -33,13 +33,26 @@ def _has_real_options(ticker: str, price: float) -> bool:
         exps = t.options
         if not exps:
             return False
-        # Verify there's actual open interest (not just listed but dead options)
-        try:
-            chain = t.option_chain(exps[0])
-            total_oi = chain.calls["openInterest"].sum() + chain.puts["openInterest"].sum()
-            return total_oi >= 50
-        except Exception:
-            return len(exps) >= 1
+        # Check OI across first 3 expirations — some tickers have 0 OI on near-term
+        # but real liquidity in later months (e.g. LNTH: OI=0 Aug, OI=685 Oct+)
+        total_oi = 0
+        for exp in exps[:3]:
+            try:
+                chain = t.option_chain(exp)
+                total_oi += chain.calls["openInterest"].sum() + chain.puts["openInterest"].sum()
+                if total_oi >= 50:
+                    return True
+            except Exception:
+                continue
+        # Also accept if there's volume even without OI (fresh options)
+        if total_oi == 0 and len(exps) >= 1:
+            try:
+                chain = t.option_chain(exps[0])
+                vol = chain.calls["volume"].sum() + chain.puts["volume"].sum()
+                return vol >= 50
+            except Exception:
+                pass
+        return total_oi >= 50
     except Exception:
         return False
 
