@@ -405,10 +405,20 @@ def run_realtime_scan(days_window: int = 7):
             ))
 
             scan_path = result.get("_scan_path", "options")
+            # Resolve event_date: prefer result field, fall back to target_date+1d
+            res_event_date = result.get("event_date")
+            if not res_event_date and result.get("target_date"):
+                try:
+                    from datetime import date as _date
+                    res_event_date = _date.fromisoformat(result["target_date"]) + timedelta(days=1)
+                except Exception:
+                    pass
+
             buy_signals.append({
                 "ticker":            ticker,
                 "company":           result.get("company") or result.get("ticker"),
                 "event_type":        result.get("event_type") or "FDA Event",
+                "event_date":        res_event_date,   # actual FDA/PDUFA/earnings date
                 "days_until":        days_until,
                 "entry_price":       result.get("entry_price"),
                 "stop_loss":         result.get("stop_loss_price"),
@@ -527,6 +537,7 @@ def run_options_scan(force: bool = False):
                         "ticker":           event.ticker,
                         "company":          event.company,
                         "event_type":       event.event_type,
+                        "event_date":       event.event_date,   # actual FDA date
                         "days_until":       days_until,
                         "entry_price":      result.get("entry_price"),
                         "stop_loss":        result.get("stop_loss_price"),
@@ -594,6 +605,15 @@ def _notify_stock_buy_signals(signals: list):
             days    = sig.get("days_until", "?")
             ttype   = sig.get("trade_type") or ("day" if isinstance(days, int) and days <= 2 else "swing")
             is_day  = (ttype == "day")
+            # Format the actual event date for display
+            ev_date_obj = sig.get("event_date")
+            if ev_date_obj:
+                try:
+                    ev_date_str = ev_date_obj.strftime("%-d %b") if hasattr(ev_date_obj, 'strftime') else str(ev_date_obj)
+                except Exception:
+                    ev_date_str = str(ev_date_obj)
+            else:
+                ev_date_str = None
 
             if scan_path == "penny":
                 # ── Penny / volume-spike path ─────────────────────────────────
@@ -621,13 +641,13 @@ def _notify_stock_buy_signals(signals: list):
                     f"{short_line}"
                     f"<b>ציון:</b>        {score:.0f}/100\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {days} ימים\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} {('— ' + ev_date_str) if ev_date_str else ''} (בעוד {days}d)\n"
                     f"<b>סיבה:</b> {sig.get('reason','')}\n\n"
                     f"{risk_emoji} <b>סיכון {risk}</b> — {advice}\n"
                     f"⚠️ <i>אין אופציות — כניסה דרך המניה בלבד</i>\n"
                     f"{exit_note}"
                 )
-                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} vol×{spike:.1f} | FDA in {days}d | score {score:.0f}"
+                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} vol×{spike:.1f} | {sig.get('event_type','FDA')} {ev_date_str or ''} in {days}d | score {score:.0f}"
 
             else:
                 # ── Options-flow path ─────────────────────────────────────────
@@ -672,13 +692,13 @@ def _notify_stock_buy_signals(signals: list):
                     f"<b>ציון כולל:</b>   {score:.0f}/100\n"
                     f"<b>פונדמנטל:</b>    {fund_str}/100  <b>קליני:</b> {clin_str}/100\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} בעוד {days} ימים\n"
+                    f"<b>אירוע:</b> {sig.get('event_type','FDA')} {('— ' + ev_date_str) if ev_date_str else ''} (בעוד {days}d)\n"
                     f"<b>סיבה:</b> {sig.get('reason','')}"
                     f"{flags_str}\n\n"
                     f"{exit_note}"
                     + (f"\n{size_note}" if size_note else "")
                 )
-                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} | C/P {cp:.1f} | FDA in {days}d | score {score:.0f}"
+                plain = f"{'DAY' if is_day else 'BUY'} {ticker} @ {entry_str} | C/P {cp:.1f} | {sig.get('event_type','FDA')} {ev_date_str or ''} in {days}d | score {score:.0f}"
 
             send_alert("stock_buy", ticker, plain, telegram_text=tg_text)
             logger.info(f"{'DAY' if is_day else 'BUY'} alert [{scan_path}]: {ticker} score={score:.0f} days={days}")

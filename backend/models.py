@@ -97,12 +97,16 @@ class OptionsSignal(Base):
     strategy_rationale   = Column(String, nullable=True)
     strategy_conviction  = Column(String, nullable=True)  # high/medium/low
 
+    # Event date — stored directly so signals are self-contained without joining FdaEvent
+    event_date  = Column(Date, nullable=True)           # actual FDA/PDUFA/earnings date
+    event_type  = Column(String, nullable=True)         # PDUFA / Phase 3 / Earnings / etc.
+
     # Stock signal (for stock trading, not options)
     stock_signal      = Column(String, nullable=True)   # BUY / WATCH / AVOID / BEARISH
     stock_signal_reason = Column(String, nullable=True)
     entry_price       = Column(Float, nullable=True)
     stop_loss_price   = Column(Float, nullable=True)    # entry × 0.92
-    target_date       = Column(String, nullable=True)   # event_date - 1 day ISO
+    target_date       = Column(String, nullable=True)   # exit date (event_date - 1 day) ISO
     binary_event_risk = Column(Integer, default=0)      # small-cap + event ≤3d ahead
     trade_type        = Column(String,  nullable=True)  # "day" (0-2d) | "swing" (3-7d)
 

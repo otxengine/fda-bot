@@ -619,6 +619,9 @@ def analyze_ticker(
         "ticker":        ticker,
         "fda_event_id":  fda_event_id,
         "scan_time":     datetime.utcnow(),
+        # event identity — stored directly so signal is self-contained
+        "event_date":    event_date,          # actual FDA/PDUFA/earnings date (date object)
+        "event_type":    event_type or "",    # PDUFA / Phase 3 / Earnings / etc.
         # raw
         "call_volume":   total_call_vol,
         "put_volume":    total_put_vol,
