@@ -80,6 +80,17 @@ def migrate_db():
             ("target_date",               "TEXT"),
             ("binary_event_risk",         "INTEGER DEFAULT 0"),
             ("trade_type",                "TEXT"),
+            # Added for self-contained signal rows (no join to FdaEvent needed)
+            ("event_date",               "DATE"),
+            ("event_type",               "TEXT"),
+            # Fundamental analysis columns
+            ("fundamental_score",         "FLOAT"),
+            ("cash_warning",              "INTEGER DEFAULT 0"),
+            ("squeeze_setup",             "INTEGER DEFAULT 0"),
+            ("analyst_bullish",           "INTEGER DEFAULT 0"),
+            ("clinical_score",            "FLOAT"),
+            ("trial_risk",                "INTEGER DEFAULT 0"),
+            ("strong_trial",              "INTEGER DEFAULT 0"),
         ],
     }
 
