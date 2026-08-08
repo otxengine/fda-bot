@@ -81,6 +81,8 @@ def compute_composite_score(
     expiration_score: float = 0.0,
     fundamental_score: float = 50.0,
     weight_overrides: dict = None,
+    call_oi: float = 0.0,
+    put_oi: float = 0.0,
 ) -> dict:
     vol_oi = total_volume / open_interest if open_interest > 0 else 0
 
@@ -90,9 +92,20 @@ def compute_composite_score(
 
     call_put_ratio = (call_volume / put_volume) if put_volume > 0 else (2.0 if call_volume > 0 else 1.0)
 
+    # Blend volume C/P (70%) with OI C/P (30%) to factor in existing positioning.
+    # If OI is strongly bearish (put_oi >> call_oi) it drags the effective C/P down
+    # even when today's volume looks bullish — prevents false BUYs on thin-day volume.
+    # Threshold: only apply when there is meaningful OI to avoid noise from low-OI tickers.
+    if call_oi + put_oi >= 50:
+        eff_call = call_volume * 0.7 + call_oi * 0.3
+        eff_put  = put_volume  * 0.7 + put_oi  * 0.3
+    else:
+        eff_call = call_volume
+        eff_put  = put_volume
+
     s_exp    = score_iv_rank(expiration_score)
     s_iv     = score_iv_rank(iv_rank)
-    s_cp     = score_call_put(call_volume, put_volume)
+    s_cp     = score_call_put(eff_call, eff_put)
     s_voi    = score_vol_oi(vol_oi)
     s_prem   = score_premium(premium_flow)
     s_fund   = max(0.0, min(100.0, float(fundamental_score)))
@@ -279,6 +292,8 @@ def analyze_ticker(
             "expiration": w_exp, "iv_rank": w_iv, "call_put": w_cp,
             "vol_oi": w_voi, "premium": w_prem, "fundamental": w_fund,
         },
+        call_oi=total_call_oi,
+        put_oi=total_put_oi,
     )
 
     # Apply negative event penalty (caps at -50 pts from composite)

@@ -615,7 +615,10 @@ def scan_and_alert():
 
                 days_until = (event.event_date - today).days
 
-                if result.get("stock_signal") == "BUY" and 0 <= days_until <= 7:
+                if (result.get("stock_signal") == "BUY"
+                        and 0 <= days_until <= 7
+                        and result.get("composite_score", 0) >= 50
+                        and result.get("call_put_ratio", 0) >= 2.0):
                     from datetime import datetime, timedelta as td
                     cooldown_cutoff = datetime.utcnow() - td(hours=4)
                     recent_alert = db.query(AlertLog).filter(
