@@ -99,6 +99,20 @@ def start_finresearch_subprocesses() -> None:
                 "--server.headless", "true",
                 "--server.baseUrlPath", "finresearch",
                 "--browser.gatherUsageStats", "false",
+                # Streamlit's default CORS/XSRF origin-checking compares the
+                # browser's Origin (https://<render-domain>) against what it
+                # thinks it's serving as (localhost:8502) and rejects the
+                # WebSocket handshake on mismatch — confirmed live: worked in
+                # local same-machine testing (origins close enough to pass)
+                # but failed on the real deployed domain with "WebSocket
+                # onerror" in the browser console. Disabling both is
+                # Streamlit's own documented fix for running behind any
+                # reverse proxy (https://docs.streamlit.io — deployment
+                # behind a proxy). Safe here specifically because Streamlit
+                # itself is never reached directly — only via the asgiproxy
+                # mount, which is the only thing actually exposed publicly.
+                "--server.enableCORS", "false",
+                "--server.enableXsrfProtection", "false",
             ],
             cwd=str(REPO_ROOT),
         )
