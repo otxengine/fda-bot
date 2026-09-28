@@ -7,10 +7,63 @@ Changes vs v1:
 - Suspicious C/P >8 → downgrade conviction, add thin-market warning
 - Bearish flow (C/P <0.8) with score ≥60 → long_put
 - C/P threshold for long_call raised from 1.8 → 2.0 (lesson: avg loss C/P=1.52)
+
+v3 (2026-09-28): sector/macro conviction overlay (see backend/data/
+macro_context.py). Applied AFTER the core catalyst-specific logic below, as
+a pure downgrade — it can only lower conviction, never raise it, and it
+never changes the strategy itself. This deliberately keeps the overlay a
+risk-mitigation gate, not a second bullish signal stacked on top of the
+first — the composite score's own weights are still being recalibrated on a
+thin sample, and a new source that could ALSO push conviction up would be
+one more knob to overfit before there's data to justify it.
 """
+
+_CONVICTION_ORDER = ["low", "medium", "high"]
+
+
+def _downgrade_conviction(conviction: str, steps: int) -> str:
+    if conviction not in _CONVICTION_ORDER:
+        return conviction
+    idx = max(0, _CONVICTION_ORDER.index(conviction) - steps)
+    return _CONVICTION_ORDER[idx]
+
+
+def _apply_context_overlay(rec: dict, signal_data: dict) -> dict:
+    if rec.get("strategy") in (None, "watch", "avoid"):
+        return rec  # nothing to downgrade — already not a trade recommendation
+
+    sector = signal_data.get("sector_momentum", "unknown")
+    macro  = signal_data.get("macro_risk_flag", "unknown")
+
+    weak_sector = sector == "weak"
+    risk_off    = macro == "risk_off"
+
+    if not (weak_sector or risk_off):
+        return rec
+
+    steps = 2 if (weak_sector and risk_off) else 1
+    new_conviction = _downgrade_conviction(rec["conviction"], steps)
+
+    caveats = []
+    if weak_sector:
+        caveats.append("biotech sector (XBI) underperforming SPY")
+    if risk_off:
+        caveats.append("macro risk-off backdrop")
+    caveat_str = " + ".join(caveats)
+
+    return {
+        **rec,
+        "conviction": new_conviction,
+        "rationale": f"{rec['rationale']} — ⚠️ conviction reduced ({caveat_str})",
+    }
 
 
 def recommend(signal_data: dict) -> dict:
+    rec = _recommend_core(signal_data)
+    return _apply_context_overlay(rec, signal_data)
+
+
+def _recommend_core(signal_data: dict) -> dict:
     score       = signal_data.get("composite_score") or 0
     cp          = signal_data.get("call_put_ratio") or 1.0
     pin         = signal_data.get("event_pinned_ratio") or 0

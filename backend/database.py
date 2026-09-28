@@ -91,6 +91,11 @@ def migrate_db():
             ("clinical_score",            "FLOAT"),
             ("trial_risk",                "INTEGER DEFAULT 0"),
             ("strong_trial",              "INTEGER DEFAULT 0"),
+            # Sector/macro context (see backend/data/macro_context.py)
+            ("sector_momentum",           "TEXT"),
+            ("sector_rel_strength_pct",   "FLOAT"),
+            ("macro_risk_flag",           "TEXT"),
+            ("vix_level",                 "FLOAT"),
         ],
         # Entry -> planned-exit outcome tracking (see backend/models.py's
         # AlertOutcome docstring for why this exists alongside the older

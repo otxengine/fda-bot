@@ -119,6 +119,15 @@ class OptionsSignal(Base):
     trial_risk        = Column(Integer, default=0)      # trial stopped for safety/futility
     strong_trial      = Column(Integer, default=0)      # completed with results
 
+    # Sector/macro context (backend/data/macro_context.py) — a conviction
+    # overlay applied in trade_recommender.py, stored here so its own
+    # informativeness against real outcomes can be evaluated later. Never
+    # fed into compute_composite_score() — see that module's docstring.
+    sector_momentum         = Column(String, nullable=True)   # strong/neutral/weak/unknown
+    sector_rel_strength_pct = Column(Float, nullable=True)    # XBI return - SPY return, 21d
+    macro_risk_flag         = Column(String, nullable=True)   # risk_on/neutral/risk_off/unknown
+    vix_level                = Column(Float, nullable=True)
+
 
 class AlertLog(Base):
     __tablename__ = "alert_log"

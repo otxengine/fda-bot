@@ -613,6 +613,19 @@ def analyze_ticker(
         binary_event_risk = False
 
     # ── B1: Trade recommendation ──────────────────────────────────────────────
+    # Sector/macro context — position-size/conviction overlay, NOT a new
+    # composite_score weight (see backend/data/macro_context.py's docstring
+    # for why). Cached in-process, so this is cheap even scanning hundreds
+    # of tickers in one run.
+    sector_ctx = {"label": "unknown", "xbi_rel_strength_pct": None}
+    macro_ctx = {"label": "unknown", "vix": None, "t10y2y": None}
+    try:
+        from backend.data.macro_context import get_sector_momentum, get_macro_risk_flag
+        sector_ctx = get_sector_momentum()
+        macro_ctx = get_macro_risk_flag()
+    except Exception as e:
+        logger.debug(f"Macro context fetch error for {ticker}: {e}")
+
     signal_snapshot = {
         "composite_score":    scores["composite_score"],
         "call_put_ratio":     scores["call_put_ratio"],
@@ -623,6 +636,8 @@ def analyze_ticker(
         "suspicious_high_cp": suspicious_high_cp,
         "event_type":         event_type or "",
         "days_until":         days_until,
+        "sector_momentum":    sector_ctx["label"],
+        "macro_risk_flag":    macro_ctx["label"],
     }
     try:
         from backend.signals.trade_recommender import recommend
@@ -696,6 +711,13 @@ def analyze_ticker(
         # already-moving
         "already_moving":      already_moving,
         "today_change_pct":    round(today_change_pct, 1),
+        # sector/macro context (see backend/data/macro_context.py) — a
+        # conviction overlay, not a composite_score input; stored so its own
+        # informativeness can be evaluated later against real outcomes.
+        "sector_momentum":         sector_ctx["label"],
+        "sector_rel_strength_pct": sector_ctx.get("xbi_rel_strength_pct"),
+        "macro_risk_flag":         macro_ctx["label"],
+        "vix_level":               macro_ctx.get("vix"),
         # learning engine
         "_neg_penalty":       neg_penalty,
         "_neg_reason":        neg_reason,

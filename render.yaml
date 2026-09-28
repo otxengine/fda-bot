@@ -27,5 +27,12 @@ services:
       # this file never overwrites the value already set on Render.
       - key: BPC_API_KEY
         sync: false
+      # Optional — deepens the macro risk-off read in backend/data/macro_context.py
+      # with the 10Y-2Y yield curve. The VIX-based sector/macro context signal
+      # (backend/data/macro_context.py) works fully without this — it only
+      # needs yfinance, already a dependency. Free key from fred.stlouisfed.org
+      # (the same one finresearch uses, if the user wants to reuse it).
+      - key: FRED_API_KEY
+        sync: false
       - key: SCANNER_API_URL
         value: https://fda-bot.onrender.com

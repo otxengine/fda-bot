@@ -426,6 +426,12 @@ def get_ticker_detail(symbol: str, db: Session = Depends(get_db)):
                 "earnings_overlap":  bool(getattr(latest_signal, "earnings_overlap", 0)),
                 "flow_velocity":     getattr(latest_signal, "flow_velocity", 0),
             },
+            "context": {
+                "sector_momentum":         getattr(latest_signal, "sector_momentum", None),
+                "sector_rel_strength_pct": getattr(latest_signal, "sector_rel_strength_pct", None),
+                "macro_risk_flag":         getattr(latest_signal, "macro_risk_flag", None),
+                "vix_level":               getattr(latest_signal, "vix_level", None),
+            },
             "fundamental": {
                 "fundamental_score":  getattr(latest_signal, "fundamental_score", None),
                 "clinical_score":     getattr(latest_signal, "clinical_score", None),
@@ -937,6 +943,8 @@ def get_stock_signals(db: Session = Depends(get_db)):
             "premium_flow":     sig.premium_flow,
             "liquidity_warning": bool(getattr(sig, "liquidity_warning", 0)),
             "iv_crush_warning":  bool(getattr(sig, "iv_crush_warning", 0)),
+            "sector_momentum":   getattr(sig, "sector_momentum", None),
+            "macro_risk_flag":   getattr(sig, "macro_risk_flag", None),
         })
 
     results.sort(key=lambda x: (
@@ -1004,6 +1012,8 @@ def get_trade_ideas(db: Session = Depends(get_db)):
             "liquidity_warning": bool(getattr(sig, "liquidity_warning", 0)),
             "iv_crush_warning":  bool(getattr(sig, "iv_crush_warning", 0)),
             "earnings_overlap":  bool(getattr(sig, "earnings_overlap", 0)),
+            "sector_momentum":   getattr(sig, "sector_momentum", None),
+            "macro_risk_flag":   getattr(sig, "macro_risk_flag", None),
         })
 
     results.sort(key=lambda x: (

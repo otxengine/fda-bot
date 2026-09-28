@@ -433,6 +433,8 @@ def run_realtime_scan(days_window: int = 7):
                 "clinical_score":    result.get("clinical_score"),
                 "analyst_bullish":   result.get("analyst_bullish"),
                 "squeeze_setup":     result.get("squeeze_setup"),
+                "sector_momentum":   result.get("sector_momentum"),
+                "macro_risk_flag":   result.get("macro_risk_flag"),
                 "binary_event_risk": result.get("binary_event_risk", 0),
                 "trade_type":        result.get("trade_type"),
                 "already_moving":    result.get("already_moving", False),
@@ -573,6 +575,8 @@ def run_options_scan(force: bool = False):
                         "clinical_score":   result.get("clinical_score"),
                         "analyst_bullish":  result.get("analyst_bullish"),
                         "squeeze_setup":    result.get("squeeze_setup"),
+                        "sector_momentum":  result.get("sector_momentum"),
+                        "macro_risk_flag":  result.get("macro_risk_flag"),
                     })
                     # BUG FIX (2026-09-28): this branch built new_buy_signals
                     # and sent a Telegram alert via _notify_stock_buy_signals()
@@ -719,6 +723,8 @@ def _notify_stock_buy_signals(signals: list):
                 if sig.get("analyst_bullish"):   flags.append("📊 אנליסטים חיוביים")
                 if sig.get("squeeze_setup"):      flags.append("🔥 שורט גבוה")
                 if sig.get("binary_event_risk"):  flags.append("⚠️ binary risk")
+                if sig.get("sector_momentum") == "weak":  flags.append("📉 סקטור ביוטק חלש")
+                if sig.get("macro_risk_flag") == "risk_off": flags.append("🌪️ מאקרו risk-off")
                 flags_str = "\n" + " | ".join(flags) if flags else ""
 
                 fund_str = f"{fund:.0f}" if fund is not None else "—"
