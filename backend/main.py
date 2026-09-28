@@ -34,6 +34,9 @@ from backend.scheduler import (
 from backend.data.polygon import PolygonClient
 from backend.data.yfinance_client import YFinanceClient
 from backend.signals.analyzer import analyze_ticker, compute_composite_score
+from backend.finresearch_mount import (
+    mount_finresearch, start_finresearch_subprocesses, stop_finresearch_subprocesses,
+)
 
 polygon_client = PolygonClient()
 
@@ -154,12 +157,17 @@ async def lifespan(app: FastAPI):
                     retry_delay = min(retry_delay * 2, 300)
         threading.Thread(target=_run_tg_bot, daemon=True).start()
 
+    # Start finresearch (a separate personal project, sharing this Render
+    # service — see backend/finresearch_mount.py) as its own subprocesses.
+    start_finresearch_subprocesses()
+
     yield
 
     # Shutdown
     if scheduler:
         scheduler.shutdown()
         logger.info("Scheduler stopped")
+    stop_finresearch_subprocesses()
 
 
 app = FastAPI(
@@ -168,6 +176,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+mount_finresearch(app)
 
 # ── API Routes ────────────────────────────────────────────────────────────────
 

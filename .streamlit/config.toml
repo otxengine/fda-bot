@@ -1,0 +1,9 @@
+# Streamlit's own Settings menu (top-right "⋮") lets the user switch between
+# Light/Dark/System at any time — that's the "deliberately chosen variant"
+# the plan's dashboard design principles call for, not an automatic OS-level
+# invert. This config just sets the accent color used in both modes.
+[theme]
+primaryColor = "#2f6fed"
+
+[server]
+headless = true

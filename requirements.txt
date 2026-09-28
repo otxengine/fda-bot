@@ -1,3 +1,4 @@
+# fda-bot (FDA/biopharma catalyst options-flow scanner)
 fastapi
 uvicorn[standard]
 sqlalchemy
@@ -11,3 +12,26 @@ lxml
 pytz
 python-telegram-bot
 anthropic
+
+# finresearch (personal macro/micro research dashboard — now sharing this
+# repo/Render service, see backend/finresearch_mount.py). Several deps
+# above (requests, beautifulsoup4, yfinance, python-dotenv, anthropic,
+# apscheduler) are already shared with fda-bot.
+fredapi
+wbgapi
+pandas
+pandas-ta
+pydantic
+pydantic-settings
+tenacity
+vaderSentiment
+streamlit
+plotly
+pyyaml
+
+# Reverse-proxy mount (backend/finresearch_mount.py) — forwards /finresearch/*
+# (HTTP + WebSocket, Streamlit needs both) to finresearch's own Streamlit
+# process. Verified end-to-end (real browser, live WebSocket navigation)
+# before being wired in.
+asgiproxy
+aiohttp

@@ -1,0 +1,37 @@
+# Supplementary FRED indicators (connectors/fred.py::ADDITIONAL_SERIES) — NOT
+# part of the regime scoring engine (see config/macro_thresholds.yaml for
+# that), just broader data for research questions and the chat/advisor.
+# Added because the original 9-series regime set left the chat unable to say
+# anything about consumption, production, housing, sentiment, or trade.
+
+indicators:
+  - series_id: "FRED:RSAFS"
+    display_name: "Retail Sales (Advance, Retail & Food Services)"
+    category: "Consumption"
+  - series_id: "FRED:INDPRO"
+    display_name: "Industrial Production Index"
+    category: "Production"
+  - series_id: "FRED:HOUST"
+    display_name: "Housing Starts"
+    category: "Housing"
+  - series_id: "FRED:UMCSENT"
+    display_name: "Consumer Sentiment (U. Michigan)"
+    category: "Sentiment"
+  - series_id: "FRED:PPIFIS"
+    display_name: "Producer Price Index (Final Demand)"
+    category: "Inflation (producer side)"
+  - series_id: "FRED:PCEPI"
+    display_name: "PCE Price Index (Fed's preferred inflation gauge)"
+    category: "Inflation (Fed's gauge)"
+  - series_id: "FRED:PCEPILFE"
+    display_name: "Core PCE Price Index"
+    category: "Inflation (Fed's gauge)"
+  - series_id: "FRED:BOPGSTB"
+    display_name: "Trade Balance (Goods & Services)"
+    category: "Trade"
+  - series_id: "FRED:GACDISA066MSFRBNY"
+    display_name: "Empire State Manufacturing Survey (General Business Conditions)"
+    category: "Manufacturing survey (ISM proxy)"
+  - series_id: "FRED:GACDFSA066MSFRBPHI"
+    display_name: "Philly Fed Manufacturing Survey (General Activity)"
+    category: "Manufacturing survey (ISM proxy)"

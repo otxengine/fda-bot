@@ -1,0 +1,157 @@
+# Per-connector configuration: enable flag, refresh cadence, fetch timeout, rate limit.
+# Phase 1 (MVP) connectors are enabled by default; Phase 3/4 are off by default
+# and require an explicit key/opt-in (see plan's Non-Goals and Phase gating).
+
+connectors:
+  # Split from a single "yahoo_finance" entry after live use: bundling the
+  # small watchlist+sectors fetch with the full 500-symbol screener universe
+  # meant the big one's timeout (which discards the WHOLE batch, not just the
+  # slow tail) silently killed the watchlist's updates too. See
+  # scheduler/jobs.py::job_yahoo_finance_priority/_universe.
+  yahoo_finance_priority:
+    enabled: true
+    tier: unofficial_library
+    cadence_seconds: 900        # 15 min — watchlist + 11 sector ETFs + SPY, ~15 symbols
+    fetch_timeout_seconds: 150
+    max_retries: 3
+
+  yahoo_finance_universe:
+    enabled: true
+    tier: unofficial_library
+    # ~500 S&P 500 symbols, WITH earnings/revenue estimates (include_estimates=True
+    # — needed for the sector+quant idea-generation page's full-market growth
+    # ranking, per user request). Estimates measured +51% duration for the
+    # priority batch (27s->41.6s for 15 symbols), so budget generously here too.
+    cadence_seconds: 10800      # 3h
+    fetch_timeout_seconds: 2700 # 45 min ceiling
+    max_retries: 2
+
+  fred:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 3600       # hourly
+    # 19 series now (9 regime + 10 additional, see connectors/fred.py) —
+    # 20s was measured too tight for the original 9 and is worse now.
+    fetch_timeout_seconds: 60
+    max_retries: 3
+
+  # Free, official economic-release calendar (FRED /releases/dates) — added
+  # as a substitute for scraping Investing.com's economic calendar, which
+  # the user declined to do after its Terms of Service turned up an explicit
+  # written prohibition on automated use of their data.
+  fred_calendar:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 86400      # daily — release schedules are known well in advance
+    fetch_timeout_seconds: 30
+    max_retries: 3
+
+  bls:
+    enabled: true
+    tier: official_free
+    # BLS itself only publishes monthly, but a report can land at any hour on
+    # its release day — hourly polling (not the earlier 6h) means we pick a
+    # fresh release up within an hour of it landing, whenever the app happens
+    # to be running. 3 series in 1 batched POST/hour = 24 requests/day,
+    # trivially inside BLS's free-key rate limit.
+    cadence_seconds: 3600
+    fetch_timeout_seconds: 20
+    max_retries: 3
+
+  bea:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 3600      # same reasoning as bls above
+    fetch_timeout_seconds: 20
+    max_retries: 3
+
+  worldbank:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 86400      # daily — annual/quarterly series
+    fetch_timeout_seconds: 30
+    max_retries: 3
+
+  federal_reserve:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 3600
+    fetch_timeout_seconds: 20
+    max_retries: 3
+
+  # The user's own separate fda-bot service (github.com/otxengine/fda-bot),
+  # deployed on Render — see connectors/fda_bot.py. 4 sequential HTTP calls
+  # per fetch, so a generous timeout; 30 min cadence is plenty for
+  # performance/calibration stats that only move as the bot's own hourly
+  # scans and daily outcome tracker land new data.
+  fda_bot:
+    enabled: true
+    tier: official_free
+    cadence_seconds: 1800      # 30 min
+    fetch_timeout_seconds: 90
+    max_retries: 2
+
+  # --- Phase 3: optional, paid/freemium, off by default ---
+  nasdaq_data_link:
+    enabled: false
+    tier: official_paid
+    cadence_seconds: 86400
+    fetch_timeout_seconds: 20
+    max_retries: 2
+
+  benzinga:
+    enabled: false
+    tier: official_paid
+    cadence_seconds: 1800
+    fetch_timeout_seconds: 20
+    max_retries: 2
+
+  # --- Phase 4: scrape fallbacks, off by default, last resort (see plan's Legal/ToS Risk Summary) ---
+  investing_com:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1
+
+  finviz:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1
+
+  seeking_alpha:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1
+
+  koyfin:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1
+
+  zacks:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1
+
+  tradingview:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 45
+    max_retries: 1
+
+  etfdb:
+    enabled: false
+    tier: scrape_fallback
+    cadence_seconds: 21600
+    fetch_timeout_seconds: 30
+    max_retries: 1

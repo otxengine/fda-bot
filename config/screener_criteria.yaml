@@ -1,0 +1,45 @@
+# Screener filter/ranking config for analysis/screener.py.
+# Each criterion is percentile-ranked (0-100) within the current run's universe
+# before being combined — never combine raw values directly (see plan's
+# Analysis Design: different units/scales, and percentile rank is robust to
+# outliers like negative-earnings P/E).
+
+universe: sp500   # see universe/sp500_fetch.py
+
+criteria:
+  - field: pe_ratio
+    display_name: "P/E Ratio"
+    direction: lower_is_better    # percentile rank inverted
+    weight: 0.2
+    hard_filter_max: 60           # exclude symbols above this before ranking (null P/E excluded too)
+
+  - field: market_cap
+    display_name: "Market Cap"
+    direction: higher_is_better
+    weight: 0.1
+    hard_filter_min: 2000000000   # $2B floor — exclude micro-caps
+
+  - field: rsi_14
+    display_name: "RSI (14d)"
+    direction: lower_is_better    # favors oversold names; flip to higher_is_better for momentum style
+    weight: 0.2
+
+  - field: pct_above_sma50
+    display_name: "% Above 50-day SMA"
+    direction: higher_is_better
+    weight: 0.15
+
+  - field: avg_volume_20d
+    display_name: "20-day Avg Volume"
+    direction: higher_is_better
+    weight: 0.1
+    hard_filter_min: 100000       # liquidity floor
+
+  - field: revenue_growth_yoy
+    display_name: "Revenue Growth YoY"
+    direction: higher_is_better
+    weight: 0.25
+
+# A symbol must appear in the top `new_entrant_rank_threshold` on TWO consecutive
+# runs before it's flagged as a "new entrant" (see plan: avoids single-run noise).
+new_entrant_rank_threshold: 25

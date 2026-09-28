@@ -1,3 +1,17 @@
+# One Render service running TWO personal projects: fda-bot (this repo's
+# original app) and finresearch (github.com/otxengine/finresearch — merged
+# in here so it doesn't need its own paid Render service). See
+# backend/finresearch_mount.py for how: fda-bot's own FastAPI app mounts a
+# reverse proxy at /finresearch (HTTP + WebSocket) in front of finresearch's
+# Streamlit process, and launches finresearch's own scheduler as a second
+# subprocess. startCommand below is unchanged from fda-bot-only — the
+# mounting/subprocess launching all happens inside backend/main.py's own
+# startup, not here.
+#
+# ⚠️ finresearch has no authentication of any kind (it was built for
+# localhost-only use). Mounted here, /finresearch is reachable by anyone who
+# finds this service's public URL — a deliberate, informed choice, not an
+# oversight; see finresearch's own README.md.
 services:
   - type: web
     name: fda-options-scanner
@@ -8,8 +22,11 @@ services:
     disk:
       name: fda-scanner-db
       mountPath: /data
-      sizeGB: 1
+      # Bumped 1GB -> 2GB: this disk now also holds finresearch's own
+      # SQLite database (FINRESEARCH_DB_PATH below) alongside fda-bot's.
+      sizeGB: 2
     envVars:
+      # ── fda-bot ──────────────────────────────────────────────────────────
       - key: DB_PATH
         value: /data/fda_scanner.db
       - key: POLYGON_API_KEY
@@ -18,21 +35,32 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      # BiopharmCatalyst authenticated v1 API key — was already set manually
-      # in the Render dashboard but undeclared here (see
-      # backend/scrapers/biopharmcatalyst.py). Without it, scrape_biopharmcatalyst()
-      # silently falls back to BPC's unauthenticated public endpoint (10
-      # events only, vs. unlimited with a key) — declaring it here just
-      # documents that this env var exists and is required, sync: false so
-      # this file never overwrites the value already set on Render.
+      # BiopharmCatalyst authenticated v1 API key — see
+      # backend/scrapers/biopharmcatalyst.py. Without it, scrape_biopharmcatalyst()
+      # falls back to BPC's unauthenticated public endpoint.
       - key: BPC_API_KEY
-        sync: false
-      # Optional — deepens the macro risk-off read in backend/data/macro_context.py
-      # with the 10Y-2Y yield curve. The VIX-based sector/macro context signal
-      # (backend/data/macro_context.py) works fully without this — it only
-      # needs yfinance, already a dependency. Free key from fred.stlouisfed.org
-      # (the same one finresearch uses, if the user wants to reuse it).
-      - key: FRED_API_KEY
         sync: false
       - key: SCANNER_API_URL
         value: https://fda-bot.onrender.com
+      # ── finresearch ──────────────────────────────────────────────────────
+      - key: FINRESEARCH_DB_PATH
+        value: /data/finresearch.db
+      - key: FRED_API_KEY
+        sync: false
+      - key: BLS_API_KEY
+        sync: false
+      - key: BEA_API_KEY
+        sync: false
+      # Phase 3, optional, off by default (finresearch's config/connectors.yaml)
+      - key: NASDAQ_DATA_LINK_API_KEY
+        sync: false
+      - key: BENZINGA_API_KEY
+        sync: false
+      # ── shared by both apps ─────────────────────────────────────────────
+      # fda-bot's learning engine + negative-event scanner (backend/signals/
+      # learning_engine.py) AND finresearch's Chat page both use this same
+      # key, if set. Leave blank to disable finresearch's Chat page rather
+      # than have it error; fda-bot's learning features degrade gracefully
+      # without it too (see that module's own fallback behavior).
+      - key: ANTHROPIC_API_KEY
+        sync: false

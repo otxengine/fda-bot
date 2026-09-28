@@ -1,0 +1,9 @@
+# Only pytest config lives here — dependencies are all in requirements.txt
+# (this repo now hosts two apps, fda-bot and finresearch; see
+# backend/finresearch_mount.py). finresearch's own packaging metadata
+# (name/dependencies/build-system) was dropped: this app is deployed via
+# `pip install -r requirements.txt` + running scripts directly from the
+# repo root (same as fda-bot always has been), not an installed package, so
+# none of that applied here anymore.
+[tool.pytest.ini_options]
+testpaths = ["tests"]

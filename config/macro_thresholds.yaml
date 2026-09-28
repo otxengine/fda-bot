@@ -1,0 +1,80 @@
+# Rule-based thresholds for analysis/macro_regime.py's traffic-light scoring.
+# Tune these without touching code. Each indicator maps its current value to
+# a light: green=1, yellow=0, red=-1. See plan's "Analysis Design" section —
+# this is a heuristic label, never a forecast/probability.
+#
+# series_id points at the RAW series a connector actually stores in macro_series
+# (currently all sourced from FRED — see connectors/fred.py — since FRED mirrors
+# BLS/BEA headline series conveniently and keeps one series_id namespace for the
+# regime engine; the standalone BLS/BEA connectors store their own series_ids too,
+# for redundancy/detail, but the regime engine reads FRED's copies).
+# `transform` is applied on read, in analysis/macro_regime.py, never persisted as
+# a separate row: none | yoy_pct | mom_diff.
+
+categories:
+  rates:
+    indicators:
+      yield_curve_10y_2y:
+        series_id: "FRED:T10Y2Y"
+        display_name: "10Y-2Y Treasury Spread"
+        transform: none
+        green_if_above: 0.25
+        red_if_below: -0.25
+      fed_funds_rate:
+        series_id: "FRED:FEDFUNDS"
+        display_name: "Fed Funds Rate (momentum)"
+        # Rate level alone isn't good/bad; scored on rate-of-change, not level.
+        transform: mom_diff
+        green_if_below: 0.0     # falling/flat rate = green
+        red_if_above: 0.25      # rising fast = red
+
+  inflation:
+    indicators:
+      cpi_yoy:
+        series_id: "FRED:CPIAUCSL"
+        display_name: "CPI YoY"
+        transform: yoy_pct
+        green_if_below: 2.5
+        red_if_above: 4.0
+      core_cpi_yoy:
+        series_id: "FRED:CPILFESL"
+        display_name: "Core CPI YoY"
+        transform: yoy_pct
+        green_if_below: 2.5
+        red_if_above: 4.0
+
+  employment:
+    indicators:
+      unemployment_rate:
+        series_id: "FRED:UNRATE"
+        display_name: "Unemployment Rate"
+        transform: none
+        green_if_below: 4.5
+        red_if_above: 6.0
+      payrolls_change:
+        series_id: "FRED:PAYEMS"
+        display_name: "Nonfarm Payrolls (MoM change, thousands)"
+        transform: mom_diff
+        green_if_above: 100
+        red_if_below: 0
+
+  growth:
+    indicators:
+      real_gdp_growth:
+        series_id: "FRED:GDPC1"
+        display_name: "Real GDP Growth YoY"
+        transform: yoy_pct
+        green_if_above: 2.0
+        red_if_below: 0.0
+
+# Overall regime label from the four category scores (each averaged to [-1, 1]).
+# Simple lookup, documented here so the UI's "why" expander can show this table verbatim.
+regime_labels:
+  - min_avg_score: 0.5
+    label: "Expansion"
+  - min_avg_score: 0.0
+    label: "Late-cycle"
+  - min_avg_score: -0.5
+    label: "Slowdown"
+  - min_avg_score: -999
+    label: "Contraction risk"
