@@ -18,7 +18,7 @@ Fields from authenticated API:
 """
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import requests
@@ -61,6 +61,41 @@ def _f(val) -> Optional[float]:
         return float(val) if val is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _extract_public_items(payload: dict) -> list[dict]:
+    """The public calendar endpoint (PUBLIC_API) returns {"data": [...],
+    "links": ..., "meta": {"total": ..., "last_page": ...}, ...} — the
+    events list is data["data"] directly, NOT data["data"]["data"]. Confirmed
+    2026-09-28 against a live response (1098 total events, 25/page, 44
+    pages — also fixes the stale "10 events" assumption in the two callers'
+    docstrings). The old `data.get("data", {})` then `.get("data", [])`
+    assumed one extra layer of nesting that was never actually there — it
+    never raised (the isinstance(dict) guard caught the mismatch), it just
+    silently returned [] every single time, so every consumer of this
+    endpoint (the "enrich with real-time price/volume" step in
+    scrape_biopharmcatalyst(), and fetch_bpc_realtime()'s primary path,
+    used by the every-10-min already-moving scan) got no data from it."""
+    items = payload.get("data")
+    return items if isinstance(items, list) else []
+
+
+def _parse_bpc_date(raw) -> Optional[date]:
+    """The public endpoint returns catalyst_date as 'MM/DD/YYYY' (e.g.
+    '09/23/2026') — NOT ISO format. date.fromisoformat() on that raises
+    ValueError for every single row, which combined with
+    _extract_public_items's bug above meant this endpoint never
+    contributed a single event even once the nesting was fixed. Falls back
+    to ISO parsing too, defensively, in case the API's format ever changes
+    or differs by field."""
+    if not raw:
+        return None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(str(raw)[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 # ── Authenticated API v1 ──────────────────────────────────────────────────────
@@ -247,8 +282,10 @@ def fetch_bpc_historical() -> list[dict]:
 
 def _fetch_public_calendar() -> list[dict]:
     """
-    Public BPC calendar — 10 events, but includes real-time price/volume data.
-    Used as fallback (no API key) or as enrichment layer for stock data.
+    Public BPC calendar — page 1 (25 most-imminent events by catalyst_date;
+    the full feed is ~1000+ across ~40 pages, see _extract_public_items),
+    with real-time price/volume/fundamental data. Used as fallback (no API
+    key) or as enrichment layer for stock data.
     """
     events = []
     today = date.today()
@@ -263,16 +300,11 @@ def _fetch_public_calendar() -> list[dict]:
             timeout=15,
         )
         resp.raise_for_status()
-        data  = resp.json()
-        inner = data.get("data", {})
-        items = inner.get("data", []) if isinstance(inner, dict) else []
+        items = _extract_public_items(resp.json())
 
         for item in items:
-            try:
-                cat_date = date.fromisoformat(item["catalyst_date"])
-            except (KeyError, ValueError):
-                continue
-            if cat_date < today:
+            cat_date = _parse_bpc_date(item.get("catalyst_date"))
+            if cat_date is None or cat_date < today:
                 continue
 
             ticker = item.get("company_ticker")
@@ -285,7 +317,9 @@ def _fetch_public_calendar() -> list[dict]:
             events.append({
                 "ticker":     ticker,
                 "company":    item.get("company_name", ""),
-                "event_type": item.get("label", "Unknown"),
+                # "label" doesn't exist on this endpoint's items (confirmed
+                # live) — stage_label is the closest match (e.g. "Phase 2a").
+                "event_type": item.get("stage_label") or "Unknown",
                 "drug_name":  item.get("drug_name") or item.get("name"),
                 "indication": item.get("indication"),
                 "event_date": cat_date,
@@ -386,8 +420,8 @@ def fetch_bpc_realtime() -> list[dict]:
     Used by already-moving scan (every 10 min).
 
     With API key: calls fda-calendar v1 for full event list, enriches with
-    public endpoint real-time data for the top 10.
-    Without API key: public endpoint only (10 events).
+    public endpoint real-time data for page 1 (25 most-imminent events).
+    Without API key: public endpoint only.
     """
     cookies = _public_cookies()
     results = []
@@ -402,24 +436,21 @@ def fetch_bpc_realtime() -> list[dict]:
             timeout=12,
         )
         resp.raise_for_status()
-        data  = resp.json()
-        inner = data.get("data", {})
-        items = inner.get("data", []) if isinstance(inner, dict) else []
+        items = _extract_public_items(resp.json())
 
         for item in items:
             ticker = item.get("company_ticker")
             if not ticker:
                 continue
-            try:
-                cat_date = date.fromisoformat(item["catalyst_date"])
-            except (KeyError, ValueError):
+            cat_date = _parse_bpc_date(item.get("catalyst_date"))
+            if cat_date is None:
                 continue
 
             results.append({
                 "ticker":         ticker,
                 "company":        item.get("company_name", ""),
                 "catalyst_date":  cat_date,
-                "event_type":     item.get("label", ""),
+                "event_type":     item.get("stage_label") or "",
                 "drug_name":      item.get("drug_name") or item.get("name"),
                 "bpc_price":      _f(item.get("company_price")),
                 "bpc_change_pct": _f(item.get("company_percent_change")),
