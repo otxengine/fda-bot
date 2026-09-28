@@ -3,6 +3,7 @@ APScheduler configuration for periodic FDA calendar and options data updates.
 """
 import logging
 from datetime import datetime, time
+from typing import Optional
 import pytz
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -312,6 +313,8 @@ def _scan_new_discoveries(discoveries: list):
                 alert_type="stock_buy",
                 score_at_trigger=score,
                 message=plain,
+                entry_price=sig.get("entry_price"),
+                target_date=sig.get("target_date"),
             ))
 
         db.commit()
@@ -399,6 +402,8 @@ def run_realtime_scan(days_window: int = 7):
                     f"path={result.get('_scan_path','?')} "
                     f"[{days_window}d scan]"
                 ),
+                entry_price=result.get("entry_price"),
+                target_date=result.get("target_date"),
             ))
 
             scan_path = result.get("_scan_path", "options")
@@ -474,7 +479,7 @@ def run_options_scan(force: bool = False):
         from datetime import date, timedelta
         from backend.constants import REAL_FDA_SOURCES
         from backend.database import SessionLocal
-        from backend.models import FdaEvent, OptionsSignal
+        from backend.models import FdaEvent, OptionsSignal, AlertLog
         from backend.data.polygon import PolygonClient
         from backend.data.yfinance_client import YFinanceClient
         from backend.signals.analyzer import analyze_ticker
@@ -569,6 +574,24 @@ def run_options_scan(force: bool = False):
                         "analyst_bullish":  result.get("analyst_bullish"),
                         "squeeze_setup":    result.get("squeeze_setup"),
                     })
+                    # BUG FIX (2026-09-28): this branch built new_buy_signals
+                    # and sent a Telegram alert via _notify_stock_buy_signals()
+                    # below, but NEVER wrote AlertLog — unlike every other BUY
+                    # path (run_realtime_scan, _scan_new_discoveries). That
+                    # meant every BUY alert this, the bot's main hourly full
+                    # scan, ever sent was invisible to run_alert_outcome_tracker
+                    # and to AlertLog-based cross-path cooldowns. Fixed.
+                    db.add(AlertLog(
+                        ticker=event.ticker,
+                        alert_type="stock_buy",
+                        score_at_trigger=result.get("composite_score"),
+                        message=(
+                            f"BUY {event.ticker} score={result.get('composite_score',0):.0f} "
+                            f"[options_scan, {days_until}d to event]"
+                        ),
+                        entry_price=result.get("entry_price"),
+                        target_date=result.get("target_date"),
+                    ))
 
                 # Also alert on EARLY_BUY: first time seeing it for this ticker
                 elif (new_stock_signal == "EARLY_BUY"
@@ -591,6 +614,19 @@ def run_options_scan(force: bool = False):
                         "reason":         result.get("stock_signal_reason"),
                         "flow_velocity":  result.get("flow_velocity", 0),
                     }])
+                    # Same bug fix as the BUY branch above — this path never
+                    # logged to AlertLog either.
+                    db.add(AlertLog(
+                        ticker=event.ticker,
+                        alert_type="early_accumulation",
+                        score_at_trigger=result.get("composite_score"),
+                        message=(
+                            f"EARLY_BUY {event.ticker} score={result.get('composite_score',0):.0f} "
+                            f"[options_scan, {days_until}d to event]"
+                        ),
+                        entry_price=result.get("entry_price"),
+                        target_date=result.get("target_date"),
+                    ))
 
         db.commit()
         db.close()
@@ -1142,6 +1178,18 @@ def run_penny_scan():
             if recent:
                 continue
 
+            # No explicit target_date field here (unlike analyze_ticker()'s
+            # result dict) — derive it the same way: exit the day before the
+            # event, or same-day for a 0-1 day-out event.
+            _ev_date = sig.get("event_date")
+            _days_until = sig.get("days_until")
+            _target_date = None
+            if _ev_date:
+                _target_date = (
+                    _ev_date.isoformat() if _days_until is not None and _days_until <= 1
+                    else (_ev_date - timedelta(days=1)).isoformat()
+                )
+
             db.add(AlertLog(
                 ticker=ticker,
                 alert_type="penny_catalyst",
@@ -1152,6 +1200,8 @@ def run_penny_scan():
                     f"mom={sig.get('momentum_3d_pct'):.1f}% "
                     f"event={sig.get('event_date')}"
                 ),
+                entry_price=sig.get("price"),
+                target_date=_target_date,
             ))
             new_alerts.append(sig)
 
@@ -1322,12 +1372,18 @@ def run_already_moving_scan():
                 price = price or 0
                 entry_str = f"${price:.4f}" if price < 1 else f"${price:.2f}"
                 vol_str   = f" | נפח x{rel_vol:.1f}" if rel_vol and rel_vol > 1.5 else ""
+                target_date_val = (
+                    event.event_date.isoformat() if days_until <= 1
+                    else (event.event_date - timedelta(days=1)).isoformat()
+                )
 
                 db.add(AlertLog(
                     ticker=ticker,
                     alert_type="already_moving",
                     score_at_trigger=chg_pct,
                     message=f"already-moving {ticker} +{chg_pct:.1f}% today | FDA in {days_until}d",
+                    entry_price=price if price else None,
+                    target_date=target_date_val,
                 ))
 
                 tg_parts = [
@@ -1578,14 +1634,53 @@ def run_daily_digest():
         logger.error(f"Daily digest job failed: {e}")
 
 
+def _yf_price_history(ticker: str, period: str = "35d"):
+    """Shared helper: one yfinance history() call, or None on any failure/
+    empty result. 35d comfortably covers the oldest alert this tracker will
+    ever look at (see LOOKBACK_DAYS below) plus its target_date."""
+    import yfinance as yf
+    try:
+        hist = yf.Ticker(ticker).history(period=period)
+        return None if hist.empty else hist
+    except Exception:
+        return None
+
+
+def _price_on_or_after(hist, target) -> Optional[float]:
+    """First closing price on or after `target` (a date) in a yfinance
+    history() DataFrame, or None if the range doesn't reach that far."""
+    for d, close in zip((idx.date() for idx in hist.index), hist["Close"]):
+        if d >= target:
+            return float(close)
+    return None
+
+
 def run_alert_outcome_tracker():
     """
-    Daily job: fetch actual price outcomes for past BUY alerts.
-    Fills AlertOutcome table so learning engine can measure hit rate.
+    Daily job: fetch actual price outcomes for past BUY-type alerts.
+    Fills AlertOutcome so the learning engine can measure signal quality.
     Runs at 20:00 EST after market close.
+
+    Two outcome measurements — see backend/models.py's AlertOutcome
+    docstring for the full rationale:
+      - change_1d_pct/change_3d_pct: a FIXED 1/3-day window from alert time.
+        Convenient, but not what this bot's alerts actually recommend.
+      - change_to_target_pct: entry_price (AlertLog.entry_price) -> price at
+        AlertLog.target_date, the bot's own computed exit point (the day
+        before the FDA decision — every BUY/EARLY_BUY alert says not to
+        hold through it). This is the metric that should be treated as
+        "did this alert work," added 2026-09-28.
+
+    Two passes, since target_date is often still in the future when an
+    alert first gets an AlertOutcome row:
+      1. New alerts (no AlertOutcome row yet) -> create one. Fills the
+         target-date fields too if target_date has already passed by the
+         time this job runs (common for 0-1 day-out day trades).
+      2. Existing AlertOutcome rows whose target-date fields are still null
+         and target_date has since passed -> fill them in now (mirrors
+         run_history_update's progressive-fill pattern for HistoricalResult).
     """
     try:
-        import yfinance as yf
         from datetime import date, timedelta, datetime
         from backend.database import SessionLocal
         from backend.models import AlertLog, AlertOutcome
@@ -1593,25 +1688,51 @@ def run_alert_outcome_tracker():
         db = SessionLocal()
         today = date.today()
 
-        # Get buy-type alerts from the last 7 days that don't have outcomes yet
-        buy_types = ("stock_buy", "penny_catalyst", "already_moving")
-        week_ago  = datetime.utcnow() - timedelta(days=7)
+        # early_accumulation can fire 8-21 days before its event, and its
+        # target_date is event_date - 1 day -> up to ~20 days after the
+        # alert. 25 days comfortably covers every alert type's target_date.
+        buy_types = ("stock_buy", "penny_catalyst", "already_moving", "early_accumulation")
+        LOOKBACK_DAYS = 25
+        lookback = datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)
 
+        def label(pct):
+            if pct is None: return None
+            if pct >= 20:  return "big_win"
+            if pct >= 5:   return "win"
+            if pct >= -3:  return "neutral"
+            if pct >= -10: return "loss"
+            return "big_loss"
+
+        def target_outcome(hist, target_date_str: str, entry_price: Optional[float], alert_date):
+            """Returns (target_d, days_to_target, price_at_target,
+            change_to_target_pct, was_hit) — the last three None/0 if
+            target_date hasn't passed yet or price data doesn't reach it."""
+            if not target_date_str:
+                return None, None, None, None, 0
+            try:
+                target_d = date.fromisoformat(target_date_str)
+            except ValueError:
+                return None, None, None, None, 0
+            days_to_target = (target_d - alert_date).days
+            if target_d > today or not entry_price or entry_price <= 0:
+                return target_d, days_to_target, None, None, 0
+            price_at_target = _price_on_or_after(hist, target_d)
+            if price_at_target is None:
+                return target_d, days_to_target, None, None, 0
+            chg = round((price_at_target - entry_price) / entry_price * 100, 2)
+            return target_d, days_to_target, round(price_at_target, 4), chg, (1 if chg >= 5 else 0)
+
+        # ── Pass 1: new alerts with no AlertOutcome row yet ──────────────────
         existing_ids = {r.alert_log_id for r in db.query(AlertOutcome.alert_log_id).all() if r.alert_log_id}
 
         alerts = db.query(AlertLog).filter(
             AlertLog.alert_type.in_(buy_types),
-            AlertLog.triggered_at >= week_ago,
+            AlertLog.triggered_at >= lookback,
             AlertLog.id.notin_(existing_ids) if existing_ids else True,
         ).all()
 
-        if not alerts:
-            db.close()
-            return
-
-        # Deduplicate: one outcome record per ticker per day
         seen = set()
-        updated = 0
+        created = 0
 
         for alert in alerts:
             key = (alert.ticker, alert.triggered_at.date())
@@ -1620,43 +1741,24 @@ def run_alert_outcome_tracker():
             seen.add(key)
 
             try:
-                hist = yf.Ticker(alert.ticker).history(period="10d")
-                if hist.empty:
+                hist = _yf_price_history(alert.ticker)
+                if hist is None:
                     continue
 
-                # Estimate price at alert time (close of that day or next available)
                 alert_date = alert.triggered_at.date()
-                closes = hist["Close"]
-                dates   = [d.date() for d in hist.index]
-
-                price_at = None
-                for i, d in enumerate(dates):
-                    if d >= alert_date:
-                        price_at = float(closes.iloc[i])
-                        break
+                price_at = _price_on_or_after(hist, alert_date)
                 if price_at is None or price_at <= 0:
                     continue
 
-                # 1-day and 3-day prices
-                def price_n_days_later(n):
-                    target = alert_date + timedelta(days=n)
-                    for i, d in enumerate(dates):
-                        if d >= target:
-                            return float(closes.iloc[i])
-                    return None
-
-                p1 = price_n_days_later(1)
-                p3 = price_n_days_later(3)
+                p1 = _price_on_or_after(hist, alert_date + timedelta(days=1))
+                p3 = _price_on_or_after(hist, alert_date + timedelta(days=3))
                 chg1 = round((p1 - price_at) / price_at * 100, 2) if p1 else None
                 chg3 = round((p3 - price_at) / price_at * 100, 2) if p3 else None
 
-                def label(pct):
-                    if pct is None: return None
-                    if pct >= 20:  return "big_win"
-                    if pct >= 5:   return "win"
-                    if pct >= -3:  return "neutral"
-                    if pct >= -10: return "loss"
-                    return "big_loss"
+                entry_price = alert.entry_price if alert.entry_price else price_at
+                target_d, days_to_target, price_at_target, change_to_target, was_hit_target = target_outcome(
+                    hist, alert.target_date, entry_price, alert_date
+                )
 
                 outcome = AlertOutcome(
                     alert_log_id   = alert.id,
@@ -1672,16 +1774,64 @@ def run_alert_outcome_tracker():
                     was_hit_1d     = 1 if (chg1 and chg1 >= 5) else 0,
                     was_hit_3d     = 1 if (chg3 and chg3 >= 5) else 0,
                     outcome_label  = label(chg1),
+                    target_date           = alert.target_date,
+                    price_at_target       = price_at_target,
+                    change_to_target_pct  = change_to_target,
+                    was_hit_to_target     = was_hit_target,
+                    days_to_target        = days_to_target,
                 )
                 db.add(outcome)
-                updated += 1
+                created += 1
 
             except Exception as e:
                 logger.debug(f"Alert outcome tracker {alert.ticker}: {e}")
 
         db.commit()
+
+        # ── Pass 2: revisit rows whose target-date outcome is still pending ─
+        pending = db.query(AlertOutcome).filter(
+            AlertOutcome.target_date.isnot(None),
+            AlertOutcome.change_to_target_pct.is_(None),
+            AlertOutcome.alert_time >= lookback,
+        ).all()
+
+        filled = 0
+        for row in pending:
+            try:
+                target_d = date.fromisoformat(row.target_date)
+            except (ValueError, TypeError):
+                continue
+            if target_d > today:
+                continue  # still ahead — try again on a future run
+
+            hist = _yf_price_history(row.ticker)
+            if hist is None:
+                continue
+
+            # Prefer the originating alert's own entry_price; fall back to
+            # this row's price_at_alert (e.g. rows created before entry_price
+            # was captured on AlertLog).
+            entry_price = row.price_at_alert
+            if row.alert_log_id:
+                alert_row = db.query(AlertLog).filter(AlertLog.id == row.alert_log_id).first()
+                if alert_row and alert_row.entry_price:
+                    entry_price = alert_row.entry_price
+            if not entry_price:
+                continue
+
+            price_at_target = _price_on_or_after(hist, target_d)
+            if price_at_target is None:
+                continue
+
+            row.price_at_target = round(price_at_target, 4)
+            row.change_to_target_pct = round((price_at_target - entry_price) / entry_price * 100, 2)
+            row.was_hit_to_target = 1 if row.change_to_target_pct >= 5 else 0
+            row.updated_at = datetime.utcnow()
+            filled += 1
+
+        db.commit()
         db.close()
-        logger.info(f"Alert outcome tracker: recorded {updated} outcomes")
+        logger.info(f"Alert outcome tracker: {created} new outcomes, {filled} target-date outcomes filled")
 
     except Exception as e:
         logger.error(f"run_alert_outcome_tracker failed: {e}")
@@ -1959,6 +2109,8 @@ def run_early_watch_scan():
                             f"EARLY_BUY {event.ticker} score={result.get('composite_score',0):.0f} "
                             f"C/P={result.get('call_put_ratio',0):.1f} days={days_until}"
                         ),
+                        entry_price=result.get("entry_price"),
+                        target_date=result.get("target_date"),
                     ))
 
             except Exception as e:

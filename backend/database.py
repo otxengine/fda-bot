@@ -92,6 +92,20 @@ def migrate_db():
             ("trial_risk",                "INTEGER DEFAULT 0"),
             ("strong_trial",              "INTEGER DEFAULT 0"),
         ],
+        # Entry -> planned-exit outcome tracking (see backend/models.py's
+        # AlertOutcome docstring for why this exists alongside the older
+        # fixed-window change_1d_pct/change_3d_pct).
+        "alert_log": [
+            ("entry_price", "FLOAT"),
+            ("target_date", "TEXT"),
+        ],
+        "alert_outcomes": [
+            ("target_date",          "TEXT"),
+            ("price_at_target",      "FLOAT"),
+            ("change_to_target_pct", "FLOAT"),
+            ("was_hit_to_target",    "INTEGER DEFAULT 0"),
+            ("days_to_target",       "INTEGER"),
+        ],
     }
 
     inspector = sa_inspect(engine)

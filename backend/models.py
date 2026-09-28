@@ -130,6 +130,14 @@ class AlertLog(Base):
     score_at_trigger = Column(Float, nullable=True)
     message         = Column(Text)
     acknowledged    = Column(Integer, default=0)
+    # Captured at alert-fire time so run_alert_outcome_tracker can later
+    # measure the trade this alert actually recommends (entry -> planned
+    # exit the day before the FDA decision — see target_date's origin in
+    # analyze_ticker()/scan_one()), not an arbitrary fixed window. Nullable:
+    # rows created before this column existed, or from alert types with no
+    # entry/exit concept (outcome_1d, edgar_filing, missed_mover), leave both null.
+    entry_price     = Column(Float, nullable=True)
+    target_date     = Column(String, nullable=True)   # ISO date, planned exit (pre-event)
 
 
 class AlertOutcome(Base):
@@ -137,13 +145,22 @@ class AlertOutcome(Base):
     Tracks actual price outcomes for every BUY alert sent.
     Populated by run_alert_outcome_tracker() daily job.
     Used by learning engine to measure signal quality and adjust thresholds.
+
+    change_1d_pct/change_3d_pct measure a FIXED window from alert time — a
+    convenient proxy, but not what this bot's own alerts tell the user to do
+    (every BUY/EARLY_BUY alert says to exit the day before the FDA decision,
+    never hold through it). change_to_target_pct measures the trade as
+    actually recommended: entry_price (AlertLog.entry_price) -> price at
+    AlertLog.target_date, the bot's own computed exit point. Added
+    2026-09-28 after finding this gap; prefer change_to_target_pct over
+    change_1d_pct/change_3d_pct for any signal-quality analysis.
     """
     __tablename__ = "alert_outcomes"
 
     id             = Column(Integer, primary_key=True, index=True)
     alert_log_id   = Column(Integer, nullable=True)   # FK to alert_log.id
     ticker         = Column(String, index=True)
-    alert_type     = Column(String)                   # stock_buy / penny_catalyst / already_moving
+    alert_type     = Column(String)                   # stock_buy / penny_catalyst / already_moving / early_accumulation
     alert_time     = Column(DateTime)
     alert_score    = Column(Float, nullable=True)
     price_at_alert = Column(Float, nullable=True)     # price when alert fired
@@ -154,6 +171,14 @@ class AlertOutcome(Base):
     was_hit_1d     = Column(Integer, default=0)       # 1 = gained ≥5% within 1 day
     was_hit_3d     = Column(Integer, default=0)       # 1 = gained ≥5% within 3 days
     outcome_label  = Column(String, nullable=True)    # big_win/win/neutral/loss/big_loss
+    # Entry -> planned-exit tracking (see class docstring). Filled in once
+    # target_date has actually passed — may stay null for a while after the
+    # row is first created (run_alert_outcome_tracker revisits it).
+    target_date          = Column(String, nullable=True)
+    price_at_target       = Column(Float, nullable=True)
+    change_to_target_pct = Column(Float, nullable=True)
+    was_hit_to_target     = Column(Integer, default=0)   # 1 = gained ≥5% by planned exit
+    days_to_target        = Column(Integer, nullable=True)  # entry -> target_date span, informational
     created_at     = Column(DateTime, default=datetime.utcnow)
     updated_at     = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

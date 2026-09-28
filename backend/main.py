@@ -1282,6 +1282,11 @@ def get_performance(db: Session = Depends(get_db)):
     total = len(outcomes)
     with_1d = [o for o in outcomes if o.change_1d_pct is not None]
     with_3d = [o for o in outcomes if o.change_3d_pct is not None]
+    # The metric that matches what this bot's alerts actually recommend
+    # (entry -> exit the day before the FDA decision, never hold through
+    # it) — see backend/models.py's AlertOutcome docstring. Prefer this over
+    # change_1d_pct/change_3d_pct for judging signal quality.
+    with_target = [o for o in outcomes if o.change_to_target_pct is not None]
 
     def safe_avg(lst, key):
         vals = [getattr(o, key) for o in lst if getattr(o, key) is not None]
@@ -1289,12 +1294,14 @@ def get_performance(db: Session = Depends(get_db)):
 
     hit_1d = sum(1 for o in with_1d if o.was_hit_1d) if with_1d else 0
     hit_3d = sum(1 for o in with_3d if o.was_hit_3d) if with_3d else 0
+    hit_target = sum(1 for o in with_target if o.was_hit_to_target) if with_target else 0
 
     # Per alert_type breakdown
     type_stats = {}
-    for atype in ("stock_buy", "penny_catalyst", "already_moving"):
+    for atype in ("stock_buy", "penny_catalyst", "already_moving", "early_accumulation"):
         subset = [o for o in outcomes if o.alert_type == atype]
         s1d = [o for o in subset if o.change_1d_pct is not None]
+        starget = [o for o in subset if o.change_to_target_pct is not None]
         if not subset:
             continue
         type_stats[atype] = {
@@ -1304,6 +1311,10 @@ def get_performance(db: Session = Depends(get_db)):
             "avg_3d_pct":  safe_avg([o for o in subset if o.change_3d_pct is not None], "change_3d_pct"),
             "best_1d":     max((o.change_1d_pct for o in s1d), default=None),
             "worst_1d":    min((o.change_1d_pct for o in s1d), default=None),
+            # entry -> planned-exit — the actual recommended trade
+            "n_to_target":       len(starget),
+            "hit_rate_to_target": round(sum(1 for o in starget if o.was_hit_to_target) / len(starget) * 100, 1) if starget else None,
+            "avg_to_target_pct": safe_avg(starget, "change_to_target_pct"),
         }
 
     # Outcome label distribution
@@ -1326,6 +1337,9 @@ def get_performance(db: Session = Depends(get_db)):
             "chg_3d":      o.change_3d_pct,
             "outcome":     o.outcome_label,
             "hit_1d":      bool(o.was_hit_1d),
+            "target_date":       o.target_date,
+            "chg_to_target":     o.change_to_target_pct,
+            "hit_to_target":     bool(o.was_hit_to_target),
         })
 
     # C/P bucket win-rate breakdown — best empirical predictor
@@ -1338,6 +1352,8 @@ def get_performance(db: Session = Depends(get_db)):
 
     n_total = len(with_1d)
     overall_win_rate = round(hit_1d / n_total * 100, 1) if n_total > 0 else None
+    n_target = len(with_target)
+    target_win_rate = round(hit_target / n_target * 100, 1) if n_target > 0 else None
 
     return {
         "total_alerts_tracked": total,
@@ -1348,6 +1364,17 @@ def get_performance(db: Session = Depends(get_db)):
             "hit_rate_3d_pct": round(hit_3d / len(with_3d) * 100, 1) if with_3d else None,
             "avg_return_1d":   safe_avg(with_1d, "change_1d_pct"),
             "avg_return_3d":   safe_avg(with_3d, "change_3d_pct"),
+            # entry -> planned pre-event exit (AlertLog.target_date) — what
+            # this bot's alerts actually recommend (never hold through the
+            # FDA decision). n_to_target is usually < n for now: it only
+            # fills in once each alert's own target_date has passed, and
+            # only for alerts fired since this was added (2026-09-28) or
+            # whose AlertOutcome row got revisited by the tracker's second
+            # pass. Prefer this over win_rate/avg_return_1d/3d above once
+            # the sample is large enough to trust.
+            "n_to_target":         n_target,
+            "win_rate_to_target":  target_win_rate,
+            "avg_return_to_target": safe_avg(with_target, "change_to_target_pct"),
         },
         "cp_buckets":      cp_buckets,
         "by_alert_type":   type_stats,
