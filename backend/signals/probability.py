@@ -116,15 +116,20 @@ def _historical_rates(composite_score: float, db) -> tuple[dict, int]:
     Returns (observed_rates_dict, n_samples).
     """
     try:
+        from backend.constants import IV_PLACEHOLDER_SOURCE
         from backend.models import HistoricalResult
 
         score_lo = max(0, composite_score - 15)
         score_hi = min(100, composite_score + 15)
 
+        # Excludes placeholder-source rows for the same reason as
+        # get_calibration_stats below — they're a systematically worse
+        # population, not representative "similar signal profile" noise.
         records = db.query(HistoricalResult).filter(
             HistoricalResult.pre_event_score >= score_lo,
             HistoricalResult.pre_event_score <= score_hi,
             HistoricalResult.change_1d_pct.isnot(None),
+            HistoricalResult.source != IV_PLACEHOLDER_SOURCE,
         ).all()
 
         n = len(records)
@@ -242,13 +247,23 @@ def get_calibration_stats(db) -> list[dict]:
     """
     Return win-rate table bucketed by score range.
     Used for /api/calibration endpoint.
+
+    Excludes IV_PLACEHOLDER_SOURCE rows (see backend/constants.py): a full
+    history pull (890 archived events, 2026-09-28) showed these made up 48%
+    of the scored subset and averaged -2.58%/day at a 4.4% win rate, versus
+    +1.39%/day and 16.7% for genuine FDA-catalyst rows — a real population
+    difference, not noise, and one the bot's own alerting logic already
+    excludes from BUY signals (see REAL_FDA_SOURCES' usages). Leaving them in
+    this aggregate silently understated how well-calibrated real signals are.
     """
     try:
+        from backend.constants import IV_PLACEHOLDER_SOURCE
         from backend.models import HistoricalResult
 
         all_records = db.query(HistoricalResult).filter(
             HistoricalResult.pre_event_score.isnot(None),
             HistoricalResult.change_1d_pct.isnot(None),
+            HistoricalResult.source != IV_PLACEHOLDER_SOURCE,
         ).all()
 
         buckets = [

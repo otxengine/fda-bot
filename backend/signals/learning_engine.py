@@ -27,7 +27,11 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Models
 HAIKU  = "claude-haiku-4-5-20251001"   # fast/cheap — negative event scan per ticker
-SONNET = "claude-sonnet-4-6"            # deep — weekly outcome analysis
+# Was "claude-sonnet-4-6" — not a valid model ID (confirmed: /api/learning
+# returned 0 insights despite 890 historical records, well past the 5-record
+# minimum analyze_outcome_patterns() requires; every weekly call was almost
+# certainly failing silently against the except Exception below).
+SONNET = "claude-sonnet-5"              # deep — weekly outcome analysis
 
 
 def _get_client():
@@ -147,7 +151,14 @@ def analyze_outcome_patterns(db) -> Optional[dict]:
     Analyze recent HistoricalResult records with Claude Sonnet.
     Extracts patterns → stores weight-adjustment recommendations.
     Returns insights dict or None if insufficient data.
+
+    Excludes IV_PLACEHOLDER_SOURCE rows — feeding this systematically worse,
+    non-tradeable population into the weight-recalibration prompt would bias
+    the LLM's recommendations toward whatever happened to work against
+    fabricated-date noise rather than real catalysts. See
+    backend/signals/probability.py::get_calibration_stats for the finding.
     """
+    from backend.constants import IV_PLACEHOLDER_SOURCE
     from backend.models import HistoricalResult, LearningInsight
 
     records = (
@@ -155,6 +166,7 @@ def analyze_outcome_patterns(db) -> Optional[dict]:
         .filter(
             HistoricalResult.change_1d_pct.isnot(None),
             HistoricalResult.pre_event_score.isnot(None),
+            HistoricalResult.source != IV_PLACEHOLDER_SOURCE,
         )
         .order_by(HistoricalResult.event_date.desc())
         .limit(60)
@@ -409,14 +421,21 @@ def build_learning_digest(insights: dict) -> str:
 def get_cp_bucket_stats(db) -> list[dict]:
     """
     Return win-rate table bucketed by C/P ratio range.
-    Used by /winrate Telegram command.
+    Used by /winrate Telegram command and /api/performance.
+
+    Excludes IV_PLACEHOLDER_SOURCE rows — see get_calibration_stats in
+    backend/signals/probability.py for the full rationale (same fix, same
+    finding: this source is a systematically worse population that dilutes
+    the aggregate, not representative noise).
     """
+    from backend.constants import IV_PLACEHOLDER_SOURCE
     from backend.models import HistoricalResult
 
     try:
         records = db.query(HistoricalResult).filter(
             HistoricalResult.pre_event_call_put_ratio.isnot(None),
             HistoricalResult.change_1d_pct.isnot(None),
+            HistoricalResult.source != IV_PLACEHOLDER_SOURCE,
         ).all()
 
         buckets = [

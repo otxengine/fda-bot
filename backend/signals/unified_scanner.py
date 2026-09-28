@@ -224,16 +224,11 @@ def scan_all_events(
     Uses unified path selection per ticker.
     Returns list of signal dicts (only BUY signals).
     """
+    from backend.constants import REAL_FDA_SOURCES as REAL_SOURCES
     from backend.models import FdaEvent
 
     today = date.today()
     cutoff = today + timedelta(days=days_window)
-
-    # Real FDA sources only — broad_scan/iv are IV-detected placeholders, not real events
-    REAL_SOURCES = {
-        "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
-        "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
-    }
 
     all_events = db.query(FdaEvent).filter(
         FdaEvent.event_date >= today,

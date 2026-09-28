@@ -596,12 +596,11 @@ def analyze_ticker(
             stock_signal = "EARLY_BUY"
             reasons = [f"קולים צוברים לפני FDA ({days_until}d)"]
             reasons.append(f"C/P {cp_val:.1f}")
-            reasons.append(f"IV rank {iv_val:.0f}")
+            reasons.append(f"IV rank {scores['iv_rank']:.0f}")
             if cp_trend_accel and prev_cp_val:
                 reasons.append(f"יחס עולה ({prev_cp_val:.1f}→{cp_val:.1f})")
             if today_change_pct < 1.0:
                 reasons.append("מניה עוד לא זזה")
-            reasons.append(f"IV rank {scores['iv_rank']:.0f}")
             stock_signal_reason = " | ".join(reasons)
             entry_price_val = stock_price if stock_price else None
             stop_loss_price_val = round(stock_price * 0.93, 2) if stock_price else None  # 7% stop

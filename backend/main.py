@@ -23,6 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from backend.constants import REAL_FDA_SOURCES
 from backend.database import init_db, get_db, SessionLocal
 from backend.models import FdaEvent, OptionsSignal, HistoricalResult, AlertLog, AlertOutcome
 from backend.scheduler import (
@@ -479,6 +480,12 @@ def get_history(
             "drug_name": r.drug_name,
             "event_date": r.event_date.isoformat(),
             "days_ago": (today - r.event_date).days,
+            # Was silently dropped from this response despite being stored on
+            # every row (see backend/data/history_builder.py) — needed to
+            # tell a real FDA catalyst apart from a broad_scan/iv placeholder
+            # (see backend/constants.py).
+            "source": r.source,
+            "is_real_fda_event": r.source in REAL_FDA_SOURCES,
             "outcome": r.outcome,
             "price_before": r.price_before,
             "price_1d_after": r.price_1d_after,
@@ -582,18 +589,13 @@ def scan_and_alert():
                 FdaEvent.ticker.isnot(None),
             ).all()
 
-            # Real FDA sources — skip broad_scan/iv placeholders entirely
-            REAL_SOURCES = {
-                "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
-                "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
-            }
-
             # Deduplicate: one real event per ticker (prefer real source, then earliest)
+            # — see backend/constants.py for why broad_scan/iv is excluded here.
             seen_tickers: dict = {}
-            for e in sorted(events, key=lambda x: (0 if x.source in REAL_SOURCES else 1, x.event_date)):
+            for e in sorted(events, key=lambda x: (0 if x.source in REAL_FDA_SOURCES else 1, x.event_date)):
                 if e.ticker not in seen_tickers:
                     seen_tickers[e.ticker] = e
-            real_events = [e for e in seen_tickers.values() if e.source in REAL_SOURCES]
+            real_events = [e for e in seen_tickers.values() if e.source in REAL_FDA_SOURCES]
 
             buy_signals = []
             for event in real_events:
@@ -853,12 +855,6 @@ def send_all_outcomes(db: Session = Depends(get_db)):
         threading.Thread(target=_notify_outcome_results, args=(to_notify,), daemon=True).start()
 
     return {"status": "ok", "sending": len(to_notify), "already_sent": len(results) - len(to_notify)}
-
-
-REAL_FDA_SOURCES = {
-    "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
-    "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
-}
 
 
 @app.get("/api/stock-signals")

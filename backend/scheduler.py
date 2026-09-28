@@ -353,11 +353,8 @@ def run_realtime_scan(days_window: int = 7):
 
         buy_signals = []
 
-        # Sources that represent real FDA/catalyst events (not IV-detected placeholders)
-        REAL_SOURCES = {
-            "biopharmcatalyst", "edgar/8-K", "fda.gov", "biopharmawatch",
-            "fda_multi_source", "manual", "nasdaq_earnings", "auto_discovery",
-        }
+        # Sources that represent real FDA/catalyst events — see backend/constants.py
+        from backend.constants import REAL_FDA_SOURCES as REAL_SOURCES
 
         for result in signals:
             ticker = result.get("ticker")
@@ -475,6 +472,7 @@ def run_options_scan(force: bool = False):
 
     try:
         from datetime import date, timedelta
+        from backend.constants import REAL_FDA_SOURCES
         from backend.database import SessionLocal
         from backend.models import FdaEvent, OptionsSignal
         from backend.data.polygon import PolygonClient
@@ -496,42 +494,62 @@ def run_options_scan(force: bool = False):
         ).all()
 
         scanned = 0
+        skipped_errors = 0
         new_buy_signals = []
 
         for event in events:
             if not event.ticker:
                 continue
 
-            prev_signal = (
-                db.query(OptionsSignal)
-                .filter(OptionsSignal.ticker == event.ticker)
-                .order_by(OptionsSignal.scan_time.desc())
-                .first()
-            )
+            # Per-ticker guard: analyze_ticker() touches several external
+            # APIs and a lot of scoring logic — one bad ticker (bad data, a
+            # transient API error, a bug like the iv_val NameError this same
+            # review found and fixed in analyzer.py) must not silently abort
+            # the scan for every ticker still queued behind it. This is the
+            # only place in this function that previously had no per-item
+            # isolation; the outer try/except below only protects the whole
+            # job from crashing the scheduler, not from truncating itself.
+            try:
+                prev_signal = (
+                    db.query(OptionsSignal)
+                    .filter(OptionsSignal.ticker == event.ticker)
+                    .order_by(OptionsSignal.scan_time.desc())
+                    .first()
+                )
 
-            result = analyze_ticker(
-                ticker=event.ticker,
-                polygon_client=polygon,
-                yfinance_client=yf_client,
-                event_date=event.event_date,
-                event_type=event.event_type,
-                drug_name=event.drug_name,
-                company=event.company,
-                db=db,
-                fda_event_id=event.id,
-            )
+                result = analyze_ticker(
+                    ticker=event.ticker,
+                    polygon_client=polygon,
+                    yfinance_client=yf_client,
+                    event_date=event.event_date,
+                    event_type=event.event_type,
+                    drug_name=event.drug_name,
+                    company=event.company,
+                    db=db,
+                    fda_event_id=event.id,
+                )
+            except Exception as ticker_exc:
+                skipped_errors += 1
+                logger.warning(f"options scan: {event.ticker} failed, skipping: {ticker_exc}")
+                continue
+
             if result:
                 signal = OptionsSignal(**{k: v for k, v in result.items() if not k.startswith("_")})
                 db.add(signal)
                 scanned += 1
 
-                # Send BUY alert only when signal is new and within window
+                # Send BUY alert only when signal is new, within window, AND
+                # from a real confirmed FDA source — run_realtime_scan and
+                # scan_and_alert already excluded broad_scan/iv placeholders
+                # (fabricated event dates, no real catalyst) from BUY alerts;
+                # this path was the one exception, see backend/constants.py.
                 days_until = (event.event_date - today).days
                 prev_stock_signal = prev_signal.stock_signal if prev_signal else None
                 new_stock_signal = result.get("stock_signal")
 
                 if (new_stock_signal == "BUY"
                         and prev_stock_signal != "BUY"
+                        and event.source in REAL_FDA_SOURCES
                         and 0 <= days_until <= 7):
                     new_buy_signals.append({
                         "ticker":           event.ticker,
@@ -555,6 +573,7 @@ def run_options_scan(force: bool = False):
                 # Also alert on EARLY_BUY: first time seeing it for this ticker
                 elif (new_stock_signal == "EARLY_BUY"
                         and prev_stock_signal not in ("EARLY_BUY", "BUY")
+                        and event.source in REAL_FDA_SOURCES
                         and 8 <= days_until <= 21):
                     _notify_early_accumulation([{
                         "ticker":         event.ticker,
@@ -575,7 +594,7 @@ def run_options_scan(force: bool = False):
 
         db.commit()
         db.close()
-        logger.info(f"Options scan complete: {scanned} tickers analyzed")
+        logger.info(f"Options scan complete: {scanned} tickers analyzed, {skipped_errors} skipped on error")
 
         # Send BUY alerts only — no WATCH spam
         if new_buy_signals:
@@ -1186,8 +1205,6 @@ def _notify_penny_signals(signals: list):
                 f"mom{mom_str} | FDA in {days}d | score {score:.0f}"
             )
             send_alert("penny_catalyst", ticker, plain, telegram_text=tg_text)
-            logger.info(f"Penny BUY alert: {ticker} {price_str} vol x{spike:.1f} score={score:.0f}")
-            logger.info(f"Penny BUY alert: {ticker} {price_str} vol x{spike:.1f} score={score:.0f}")
             logger.info(f"Penny BUY alert: {ticker} {price_str} vol×{spike:.1f} score={score:.0f}")
 
     except Exception as e:
