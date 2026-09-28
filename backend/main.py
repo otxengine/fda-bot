@@ -530,6 +530,29 @@ def trigger_seed_history():
     return {"status": "seeding triggered", "message": "Building historical results in background..."}
 
 
+@app.post("/api/seed-bpc-historical")
+def trigger_seed_bpc_historical(lookback_days: int = Query(180, description="How far back to pull")):
+    """Manually trigger seeding HistoricalResult from BiopharmCatalyst's own
+    historical-catalysts API (see backend/data/history_builder.py::
+    seed_from_bpc_historical) — real, confirmed past catalysts, independent
+    of whatever this bot's FdaEvent table happened to track in real time.
+    Runs automatically daily at 3:00 EST (see backend/scheduler.py); this is
+    for an on-demand/backfill run."""
+    import threading
+    from backend.data.history_builder import seed_from_bpc_historical
+
+    def _run():
+        seed_db = SessionLocal()
+        try:
+            n = seed_from_bpc_historical(seed_db, lookback_days=lookback_days)
+            logger.info(f"Manual BPC historical seed: {n} new records")
+        finally:
+            seed_db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "seeding triggered", "message": f"Pulling BPC historical catalysts (last {lookback_days}d) in background..."}
+
+
 @app.post("/api/refresh")
 def trigger_refresh():
     """Manually trigger a fresh FDA scrape + options scan + cleanup."""

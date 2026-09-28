@@ -187,6 +187,83 @@ def seed_past_14_days(db):
     return added
 
 
+def seed_from_bpc_historical(db, lookback_days: int = 180, max_new: int = 200) -> int:
+    """
+    Seed HistoricalResult from BiopharmCatalyst's own historical-catalysts API
+    (backend/scrapers/biopharmcatalyst.py::fetch_bpc_historical) — real,
+    confirmed past FDA/catalyst events with real dates, source="biopharmcatalyst"
+    (a REAL_FDA_SOURCES entry — see backend/constants.py).
+
+    This exists because seed_past_14_days only archives events this bot's own
+    FdaEvent table happened to have tracked in real time — genuine-catalyst
+    ground truth was thin (n=30 in a 2026-09-28 review of the full archive)
+    purely because of that dependency, not because real catalysts are rare.
+    BPC's historical-catalysts endpoint is an independent, much larger source
+    of confirmed real events, so pulling from it directly grows the clean
+    (non-placeholder) sample the calibration/learning-engine stats depend on,
+    without touching source="broad_scan/iv" rows at all.
+
+    Bounded by lookback_days (price history/relevance) and max_new (BPC
+    100 req/24h rate limit is for the calendar/pdufa endpoints — this uses a
+    separate endpoint, but yfinance price lookups per new row are the real
+    cost, hence the cap).
+    """
+    from backend.models import HistoricalResult
+    from backend.scrapers.biopharmcatalyst import fetch_bpc_historical
+
+    today = date.today()
+    cutoff = today - timedelta(days=lookback_days)
+
+    try:
+        raw_events = fetch_bpc_historical()
+    except Exception as e:
+        logger.warning(f"BPC historical fetch failed: {e}")
+        return 0
+
+    added = 0
+    for item in raw_events:
+        if added >= max_new:
+            break
+
+        ticker = (item.get("ticker") or "").strip().upper()
+        raw_date = item.get("event_date")
+        if not ticker or not raw_date:
+            continue
+        try:
+            event_date = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            continue
+        if event_date < cutoff or event_date >= today:
+            continue
+
+        existing = db.query(HistoricalResult).filter(
+            HistoricalResult.ticker == ticker,
+            HistoricalResult.event_date == event_date,
+        ).first()
+        if existing:
+            continue
+
+        result_data = build_historical_result(
+            ticker=ticker,
+            company=item.get("company") or ticker,
+            event_type=item.get("event_type") or "Catalyst",
+            drug_name=item.get("drug_name"),
+            event_date=event_date,
+            source="biopharmcatalyst",
+            signal=None,  # BPC's own past events rarely line up with our OptionsSignal history
+        )
+        # No pre-event signal available for these (see signal=None above) —
+        # this row contributes to outcome/return stats, not score calibration.
+        db.add(HistoricalResult(**result_data))
+        added += 1
+
+    if added:
+        db.commit()
+        logger.info(f"BPC historical seed: added {added} real-catalyst records "
+                    f"(of {len(raw_events)} returned, last {lookback_days}d)")
+    return added
+
+
 def seed_demo_history(db) -> int:
     """
     Seed demo historical results using real biotech tickers and real yfinance price data.

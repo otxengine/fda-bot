@@ -761,6 +761,30 @@ def _notify_new_trade_ideas(ideas: list):
         logger.error(f"_notify_new_trade_ideas failed: {e}")
 
 
+def run_bpc_historical_seed():
+    """
+    Job: pull real past catalysts from BiopharmCatalyst's own historical-
+    catalysts API and seed HistoricalResult from them (see
+    backend/data/history_builder.py::seed_from_bpc_historical for why —
+    grows the genuine-FDA-catalyst sample independent of whatever this bot's
+    own FdaEvent table happened to track in real time). Daily: BPC's
+    historical list doesn't change fast, and each new row costs a yfinance
+    price lookup.
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.data.history_builder import seed_from_bpc_historical
+
+        db = SessionLocal()
+        try:
+            added = seed_from_bpc_historical(db)
+            logger.info(f"BPC historical seed job: {added} new records")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"BPC historical seed job failed: {e}")
+
+
 def run_cleanup():
     """Job: archive past FDA events to historical_results, then remove them."""
     try:
@@ -2131,6 +2155,17 @@ def create_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(hour=2, minute=0, timezone=EST),
         id="nightly_cleanup",
         name="Nightly Cleanup (2:00 EST)",
+        replace_existing=True,
+    )
+
+    # ── BPC HISTORICAL SEED: 3:00 AM EST daily ───────────────────────────────
+    # After nightly cleanup — grows the real-catalyst HistoricalResult sample
+    # from BPC's own historical-catalysts API (see backend/data/history_builder.py).
+    scheduler.add_job(
+        run_bpc_historical_seed,
+        trigger=CronTrigger(hour=3, minute=0, timezone=EST),
+        id="bpc_historical_seed",
+        name="BPC Historical Seed (3:00 EST)",
         replace_existing=True,
     )
 

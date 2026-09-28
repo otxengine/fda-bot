@@ -18,5 +18,14 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      # BiopharmCatalyst authenticated v1 API key — was already set manually
+      # in the Render dashboard but undeclared here (see
+      # backend/scrapers/biopharmcatalyst.py). Without it, scrape_biopharmcatalyst()
+      # silently falls back to BPC's unauthenticated public endpoint (10
+      # events only, vs. unlimited with a key) — declaring it here just
+      # documents that this env var exists and is required, sync: false so
+      # this file never overwrites the value already set on Render.
+      - key: BPC_API_KEY
+        sync: false
       - key: SCANNER_API_URL
         value: https://fda-bot.onrender.com
