@@ -177,7 +177,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-mount_finresearch(app)
+# NOTE: mount_finresearch(app) is called at the very end of this file, not
+# here — it mounts finresearch at "/" (root), which must be registered
+# AFTER every one of this file's own @app.get/@app.post routes below.
+# Starlette matches routes in registration order and a root Mount matches
+# every path as a prefix, so if it were registered first it would swallow
+# every /api/* request meant for fda-bot's own handlers below.
 
 # ── API Routes ────────────────────────────────────────────────────────────────
 
@@ -1246,17 +1251,26 @@ def get_status(db: Session = Depends(get_db)):
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────
+# Moved off "/" to "/fda-bot": finresearch (github.com/otxengine/finresearch,
+# merged into this repo — see backend/finresearch_mount.py) now owns the
+# root path instead, per explicit request — this service's public link
+# should land on finresearch's dashboard, not fda-bot's own frontend.
+# fda-bot's own API (/api/*) is untouched either way; only the two
+# STATIC/UI front doors moved. Static mount renamed /static -> /fda-bot-static
+# (frontend/index.html's <script src> updated to match) because Streamlit's
+# own root-mounted assets also live at /static/* once finresearch owns "/" —
+# same path, two different apps, would otherwise collide.
 
 frontend_dir = Path(__file__).parent.parent / "frontend"
 
 if frontend_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    app.mount("/fda-bot-static", StaticFiles(directory=str(frontend_dir)), name="fda-bot-static")
 
-    @app.get("/")
+    @app.get("/fda-bot")
     def serve_dashboard():
         return FileResponse(str(frontend_dir / "index.html"))
 else:
-    @app.get("/")
+    @app.get("/fda-bot")
     def root():
         return {"message": "FDA Options Scanner API running. Frontend not found."}
 
@@ -1481,3 +1495,10 @@ def trigger_background_tracking():
     from backend.scheduler import run_background_tracking
     threading.Thread(target=run_background_tracking, daemon=True).start()
     return {"status": "background tracking started (8-14d window, no alerts)"}
+
+
+# ── finresearch mount — MUST be last ────────────────────────────────────────
+# See mount_finresearch()'s own docstring and the note where `app = FastAPI(...)`
+# is defined above: this mounts finresearch at "/" and has to be registered
+# after every route above it, or it would swallow all of them.
+mount_finresearch(app)

@@ -42,12 +42,21 @@ def _finresearch_present() -> bool:
 
 
 def mount_finresearch(app: FastAPI) -> None:
-    """Call once at import time (module-level app setup), before the server
-    starts. No-op if finresearch's code isn't present in this checkout
-    (e.g. an older commit, or a partial/local checkout of just backend/) —
-    degrades gracefully rather than crashing fda-bot's own startup."""
+    """Call once, at the very end of backend/main.py (after every one of
+    fda-bot's own @app.get/@app.post routes have been registered) — NOT
+    right after `app = FastAPI(...)`. This mounts finresearch at "/" (root):
+    finresearch's dashboard is now this service's public front door
+    (fda-bot's own frontend moved to /fda-bot), per explicit request.
+    Starlette matches routes in registration order, and a root Mount
+    matches every path as a prefix — registering it before fda-bot's own
+    routes would swallow every /api/* request intended for fda-bot's own
+    handlers. See the call site in backend/main.py for the same note.
+
+    No-op if finresearch's code isn't present in this checkout (e.g. an
+    older commit, or a partial/local checkout of just backend/) — degrades
+    gracefully rather than crashing fda-bot's own startup."""
     if not _finresearch_present():
-        logger.info("finresearch not found in this checkout — skipping /finresearch mount")
+        logger.info("finresearch not found in this checkout — skipping root mount")
         return
 
     try:
@@ -55,7 +64,7 @@ def mount_finresearch(app: FastAPI) -> None:
         from asgiproxy.context import ProxyContext
         from asgiproxy.simple_proxy import make_simple_proxy_app
     except ImportError:
-        logger.warning("asgiproxy not installed — skipping /finresearch mount")
+        logger.warning("asgiproxy not installed — skipping root mount")
         return
 
     class _FinresearchProxyConfig(BaseURLProxyConfigMixin, ProxyConfig):
@@ -63,13 +72,13 @@ def mount_finresearch(app: FastAPI) -> None:
         rewrite_host_header = f"localhost:{FINRESEARCH_PORT}"
 
     proxy_context = ProxyContext(config=_FinresearchProxyConfig())
-    app.mount("/finresearch", make_simple_proxy_app(proxy_context))
+    app.mount("/", make_simple_proxy_app(proxy_context))
 
     @app.on_event("shutdown")
     async def _close_finresearch_proxy():
         await proxy_context.close()
 
-    logger.info(f"Mounted finresearch at /finresearch (upstream :{FINRESEARCH_PORT})")
+    logger.info(f"Mounted finresearch at / (root) (upstream :{FINRESEARCH_PORT})")
 
 
 def start_finresearch_subprocesses() -> None:
@@ -97,7 +106,10 @@ def start_finresearch_subprocesses() -> None:
                 "--server.port", str(FINRESEARCH_PORT),
                 "--server.address", "0.0.0.0",
                 "--server.headless", "true",
-                "--server.baseUrlPath", "finresearch",
+                # No --server.baseUrlPath: finresearch is mounted at "/"
+                # (root) now, not a sub-path — baseUrlPath must match
+                # wherever the proxy actually serves it from, and root is
+                # Streamlit's own default when this flag is omitted.
                 "--browser.gatherUsageStats", "false",
                 # Streamlit's default CORS/XSRF origin-checking compares the
                 # browser's Origin (https://<render-domain>) against what it
