@@ -26,16 +26,17 @@ from dashboard.data import (
     save_chat_message,
     start_new_conversation,
 )
+from dashboard.rtl import apply_rtl
 from storage.db import read_connection
 
-st.set_page_config(page_title="Chat — Fin Research", page_icon="💬", layout="wide")
+apply_rtl()
 
 api_key = get_settings().anthropic_api_key
 
 # --- Sidebar: conversation history, like a normal AI chat app --------------
 with st.sidebar:
-    st.markdown("### Conversations")
-    if st.button("➕ New conversation", use_container_width=True):
+    st.markdown("### שיחות")
+    if st.button("➕ שיחה חדשה", use_container_width=True):
         st.session_state.pop("current_conversation_id", None)
         st.session_state.chat_messages = []
         st.rerun()
@@ -49,26 +50,25 @@ with st.sidebar:
             st.session_state.current_conversation_id = conv["id"]
             st.session_state.chat_messages = load_conversation_messages(conv["id"])
             st.rerun()
-        if row[1].button("🗑️", key=f"del_{conv['id']}", help="Delete this conversation"):
+        if row[1].button("🗑️", key=f"del_{conv['id']}", help="מחיקת שיחה זו"):
             delete_conversation(conv["id"])
             if is_active:
                 st.session_state.pop("current_conversation_id", None)
                 st.session_state.chat_messages = []
             st.rerun()
 
-st.title("Chat")
+st.title("צ'אט")
 st.caption(
-    "Ask about macro conditions, sector rotation, your watchlist, or the screener. "
-    "Answers are grounded only in this app's own stored data — never a prediction, "
-    "never investment advice. Conversations are saved — pick one up again anytime "
-    "from the sidebar."
+    "שאלו על תנאי מאקרו, רוטציית סקטורים, רשימת המעקב שלכם או הסקרינר. "
+    "התשובות מבוססות אך ורק על הנתונים השמורים באפליקציה זו — לעולם לא תחזית, "
+    "לעולם לא ייעוץ השקעות. השיחות נשמרות — ניתן לחזור אליהן בכל עת מסרגל הצד."
 )
 
 if not api_key:
     st.warning(
-        "Chat is disabled — set ANTHROPIC_API_KEY in your .env file to enable it. "
-        "Note: a claude.ai Pro/Max subscription does not grant this; it's a separate, "
-        "usage-based API key from console.anthropic.com."
+        "הצ'אט מושבת — הגדירו ANTHROPIC_API_KEY בקובץ ה-.env כדי להפעיל אותו. "
+        "שימו לב: מנוי claude.ai Pro/Max אינו כולל זאת; זהו מפתח API נפרד, "
+        "בחיוב לפי שימוש, מ-console.anthropic.com."
     )
     st.stop()
 
@@ -81,7 +81,7 @@ for msg in st.session_state.chat_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-prompt = st.chat_input("e.g. Which sector looks strongest right now, and do the macro fundamentals support it?")
+prompt = st.chat_input("למשל: איזה סקטור נראה הכי חזק כרגע, והאם הפונדמנטלס המאקרו-כלכלי תומך בכך?")
 if prompt:
     if "current_conversation_id" not in st.session_state:
         # First message of a fresh conversation — create its row now, titled
@@ -95,7 +95,7 @@ if prompt:
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Checking the data..."):
+        with st.spinner("בודק את הנתונים..."):
             with read_connection() as conn:
                 reply = run_chat_turn(conn, api_key, st.session_state.chat_messages)
         st.markdown(reply)

@@ -21,42 +21,43 @@ from dashboard.data import (
     load_watchlist_symbols,
     remove_from_watchlist,
 )
+from dashboard.rtl import apply_rtl
 
-_PERIOD_LABELS = {"0q": "This Quarter", "+1q": "Next Quarter", "0y": "This Year", "+1y": "Next Year"}
+_PERIOD_LABELS = {"0q": "הרבעון הנוכחי", "+1q": "הרבעון הבא", "0y": "השנה הנוכחית", "+1y": "השנה הבאה"}
 _PERIOD_ORDER = ["0q", "+1q", "0y", "+1y"]
 
-st.set_page_config(page_title="Watchlist — Fin Research", page_icon="📈", layout="wide")
-st.title("Watchlist")
+apply_rtl()
+st.title("רשימת מעקב")
 
 with st.form("add_symbol", clear_on_submit=True):
     cols = st.columns([2, 4, 1])
-    new_symbol = cols[0].text_input("Add symbol", placeholder="e.g. AAPL").strip().upper()
-    new_notes = cols[1].text_input("Notes (optional)")
-    submitted = cols[2].form_submit_button("Add")
+    new_symbol = cols[0].text_input("הוספת טיקר", placeholder="למשל AAPL").strip().upper()
+    new_notes = cols[1].text_input("הערות (אופציונלי)")
+    submitted = cols[2].form_submit_button("הוספה")
     if submitted and new_symbol:
         ok, msg = add_to_watchlist(new_symbol, new_notes)
         (st.success if ok else st.error)(msg)
 
 symbols = load_watchlist_symbols()
 if not symbols:
-    st.info("Your watchlist is empty — add a symbol above.")
+    st.info("רשימת המעקב שלכם ריקה — הוסיפו טיקר למעלה.")
     st.stop()
 
 details = load_watchlist_details()
-st.caption("Watchlist data as of the scheduler's last yahoo_finance fetch.")
+st.caption("נתוני רשימת המעקב נכונים לשאיבת ה-yahoo_finance האחרונה של התזמון.")
 st.dataframe(
     details.rename(columns={
-        "symbol": "Symbol", "price": "Price", "change_pct": "Change %",
-        "pe_ratio": "P/E", "market_cap": "Market Cap",
-        "fifty_two_wk_high": "52wk High", "fifty_two_wk_low": "52wk Low",
-        "notes": "Notes", "target_price": "Target", "tags": "Tags",
+        "symbol": "טיקר", "price": "מחיר", "change_pct": "שינוי %",
+        "pe_ratio": "מכפיל רווח", "market_cap": "שווי שוק",
+        "fifty_two_wk_high": "גבוה 52 שבועות", "fifty_two_wk_low": "נמוך 52 שבועות",
+        "notes": "הערות", "target_price": "יעד", "tags": "תגיות",
     }),
     hide_index=True, use_container_width=True,
 )
 
-selected = st.selectbox("Deep dive", symbols)
+selected = st.selectbox("מבט מעמיק", symbols)
 remove_col, _ = st.columns([1, 5])
-if remove_col.button(f"Remove {selected} from watchlist"):
+if remove_col.button(f"הסרת {selected} מרשימת המעקב"):
     ok, msg = remove_from_watchlist(selected)
     (st.success if ok else st.error)(msg)
     st.rerun()
@@ -64,22 +65,22 @@ if remove_col.button(f"Remove {selected} from watchlist"):
 row = details[details["symbol"] == selected].iloc[0] if not details.empty else None
 if row is not None:
     m = st.columns(4)
-    m[0].metric("Price", f"${row['price']:.2f}" if row["price"] else "—")
-    m[1].metric("Change %", f"{row['change_pct']:+.2f}%" if row["change_pct"] is not None else "—")
-    m[2].metric("P/E", f"{row['pe_ratio']:.1f}" if row["pe_ratio"] else "—")
-    m[3].metric("Market Cap", f"${row['market_cap']/1e9:.1f}B" if row["market_cap"] else "—")
+    m[0].metric("מחיר", f"${row['price']:.2f}" if row["price"] else "—")
+    m[1].metric("שינוי %", f"{row['change_pct']:+.2f}%" if row["change_pct"] is not None else "—")
+    m[2].metric("מכפיל רווח", f"{row['pe_ratio']:.1f}" if row["pe_ratio"] else "—")
+    m[3].metric("שווי שוק", f"${row['market_cap']/1e9:.1f}B" if row["market_cap"] else "—")
 
 df = load_price_history_with_technicals(selected, interval="1d")
 if df.empty:
-    st.info("No price history yet for this symbol — the scheduler fetches it on the next tick.")
+    st.info("אין עדיין היסטוריית מחירים לטיקר זה — התזמון ישאב אותה בטיק הבא.")
 else:
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05,
-        subplot_titles=(f"{selected} — Daily", "RSI (14)"),
+        subplot_titles=(f"{selected} — יומי", "RSI (14)"),
     )
     fig.add_trace(
         go.Candlestick(
-            x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="Price",
+            x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="מחיר",
         ),
         row=1, col=1,
     )
@@ -101,27 +102,27 @@ else:
     fig.update_layout(height=600, xaxis_rangeslider_visible=False, legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("Fundamentals (trend)")
+st.subheader("פונדמנטלס (מגמה)")
 fund_hist = load_fundamentals_history(selected)
 if fund_hist.empty:
-    st.caption("No fundamentals history yet.")
+    st.caption("אין עדיין היסטוריית פונדמנטלס.")
 else:
     st.dataframe(
         fund_hist.rename(columns={
-            "as_of": "As of", "pe_ratio": "P/E", "forward_pe": "Fwd P/E", "eps": "EPS",
-            "revenue_growth_yoy": "Rev Growth YoY", "profit_margin": "Profit Margin", "roe": "ROE",
+            "as_of": "נכון ל", "pe_ratio": "מכפיל רווח", "forward_pe": "מכפיל רווח עתידי", "eps": "רווח למניה",
+            "revenue_growth_yoy": "צמיחת הכנסות שנתית", "profit_margin": "שולי רווח", "roe": "תשואה להון",
         }),
         hide_index=True, use_container_width=True,
     )
 
-st.subheader("Analyst Estimates")
+st.subheader("תחזיות אנליסטים")
 st.caption(
-    "Consensus estimates by period — 'This Year'/'Next Year' answer current vs. next-year "
-    "revenue/earnings and their YoY growth rate. Analyst consensus, not this app's own analysis."
+    "תחזיות קונצנזוס לפי תקופה — 'השנה הנוכחית'/'השנה הבאה' עונות על הכנסות/רווחים "
+    "נוכחיים מול השנה הבאה וקצב הצמיחה השנתי שלהם. קונצנזוס אנליסטים, לא ניתוח של האפליקציה עצמה."
 )
 estimates = load_earnings_estimates(selected)
 if estimates.empty:
-    st.caption("No analyst estimates fetched yet for this symbol.")
+    st.caption("טרם נשאבו תחזיות אנליסטים לטיקר זה.")
 else:
     pivoted = estimates.pivot_table(index="period", columns="metric", values=["avg_estimate", "growth_yoy"])
     rows = []
@@ -130,16 +131,16 @@ else:
             continue
         rows.append(
             {
-                "Period": _PERIOD_LABELS[period],
-                "Earnings (EPS) Est.": pivoted.loc[period, ("avg_estimate", "earnings")]
+                "תקופה": _PERIOD_LABELS[period],
+                "תחזית רווח (EPS)": pivoted.loc[period, ("avg_estimate", "earnings")]
                 if ("avg_estimate", "earnings") in pivoted.columns else None,
                 # growth_yoy is stored as a fraction (0.0864) — *100 here so the
                 # "%.1f%%" column format below renders "8.6%", not "0.1%".
-                "Earnings Growth YoY": pivoted.loc[period, ("growth_yoy", "earnings")] * 100
+                "צמיחת רווח שנתית": pivoted.loc[period, ("growth_yoy", "earnings")] * 100
                 if ("growth_yoy", "earnings") in pivoted.columns and pd.notna(pivoted.loc[period, ("growth_yoy", "earnings")]) else None,
-                "Revenue Est.": pivoted.loc[period, ("avg_estimate", "revenue")]
+                "תחזית הכנסות": pivoted.loc[period, ("avg_estimate", "revenue")]
                 if ("avg_estimate", "revenue") in pivoted.columns else None,
-                "Revenue Growth YoY": pivoted.loc[period, ("growth_yoy", "revenue")] * 100
+                "צמיחת הכנסות שנתית": pivoted.loc[period, ("growth_yoy", "revenue")] * 100
                 if ("growth_yoy", "revenue") in pivoted.columns and pd.notna(pivoted.loc[period, ("growth_yoy", "revenue")]) else None,
             }
         )
@@ -148,17 +149,17 @@ else:
         display_df,
         hide_index=True, use_container_width=True,
         column_config={
-            "Earnings Growth YoY": st.column_config.NumberColumn(format="%.1f%%"),
-            "Revenue Growth YoY": st.column_config.NumberColumn(format="%.1f%%"),
+            "צמיחת רווח שנתית": st.column_config.NumberColumn(format="%.1f%%"),
+            "צמיחת הכנסות שנתית": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
     as_of = estimates["as_of"].iloc[0]
-    st.caption(f"As of {as_of}")
+    st.caption(f"נכון ל-{as_of}")
 
-st.subheader("Recent news")
+st.subheader("חדשות אחרונות")
 news = load_news(symbol=selected, limit=15)
 if news.empty:
-    st.caption("No news fetched yet for this symbol.")
+    st.caption("טרם נשאבו חדשות לטיקר זה.")
 else:
     for _, article in news.iterrows():
         sentiment = article["sentiment_score"]

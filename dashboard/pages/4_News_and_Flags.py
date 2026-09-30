@@ -10,20 +10,21 @@ import pandas as pd
 import streamlit as st
 
 from dashboard.data import load_connector_health, load_flags, load_news
+from dashboard.rtl import apply_rtl
 
-st.set_page_config(page_title="News & Flags — Fin Research", page_icon="📈", layout="wide")
-st.title("News & Flags")
+apply_rtl()
+st.title("חדשות והתראות")
 
-tab_flags, tab_news, tab_health = st.tabs(["Flags", "News", "Connector Health"])
+tab_flags, tab_news, tab_health = st.tabs(["התראות", "חדשות", "בריאות מקורות נתונים"])
 
-_SEVERITY_BADGE = {"info": "🔵 Info", "watch": "🟡 Watch", "warn": "🔴 Warn"}
+_SEVERITY_BADGE = {"info": "🔵 מידע", "watch": "🟡 מעקב", "warn": "🔴 אזהרה"}
 
 with tab_flags:
     flags = load_flags(limit=100)
     if flags.empty:
-        st.caption("No flags yet.")
+        st.caption("אין עדיין התראות.")
     else:
-        severities = st.multiselect("Severity", options=sorted(flags["severity"].unique()), default=list(flags["severity"].unique()))
+        severities = st.multiselect("חומרה", options=sorted(flags["severity"].unique()), default=list(flags["severity"].unique()))
         filtered = flags[flags["severity"].isin(severities)]
         for _, f in filtered.iterrows():
             badge = _SEVERITY_BADGE.get(f["severity"], f["severity"])
@@ -37,7 +38,7 @@ with tab_flags:
 with tab_news:
     news = load_news(limit=50)
     if news.empty:
-        st.caption("No news fetched yet.")
+        st.caption("טרם נשאבו חדשות.")
     else:
         for _, article in news.iterrows():
             sentiment = article["sentiment_score"]
@@ -48,24 +49,24 @@ with tab_news:
 with tab_health:
     health = load_connector_health()
     if health.empty:
-        st.caption("No connector runs logged yet — start the scheduler (run.bat).")
+        st.caption("טרם נרשמו ריצות מקורות נתונים — הפעילו את התזמון (run.bat).")
     else:
         def _status_icon(row) -> str:
             if row["status"] == "ok":
-                return "🟢 OK"
+                return "🟢 תקין"
             if row["status"] == "disabled":
-                return "⚪ Disabled"
-            return f"🔴 Error (×{row['failure_streak']} in a row)"
+                return "⚪ מושבת"
+            return f"🔴 שגיאה (×{row['failure_streak']} ברצף)"
 
         health = health.copy()
-        health["Status"] = health.apply(_status_icon, axis=1)
+        health["סטטוס"] = health.apply(_status_icon, axis=1)
         st.dataframe(
-            health[["connector_name", "Status", "run_ts", "duration_ms", "error_message"]].rename(
-                columns={"connector_name": "Connector", "run_ts": "Last run", "duration_ms": "Duration (ms)", "error_message": "Last error"}
+            health[["connector_name", "סטטוס", "run_ts", "duration_ms", "error_message"]].rename(
+                columns={"connector_name": "מקור נתונים", "run_ts": "ריצה אחרונה", "duration_ms": "משך (מ״ש)", "error_message": "שגיאה אחרונה"}
             ),
             hide_index=True, use_container_width=True,
         )
         st.caption(
-            "A fragile connector (especially any Phase 4 scrape fallback) failing repeatedly "
-            "shows up here rather than silently going stale."
+            "מקור נתונים שביר (במיוחד כל fallback גירוד מ-Phase 4) שנכשל שוב ושוב "
+            "יופיע כאן במקום להתיישן בשקט."
         )

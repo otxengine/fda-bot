@@ -229,9 +229,9 @@ def add_to_watchlist(symbol: str, notes: str = "") -> tuple[bool, str]:
         conn.close()
         load_watchlist_symbols.clear()
         load_watchlist_details.clear()
-        return True, f"Added {symbol.upper()} to watchlist"
+        return True, f"{symbol.upper()} נוסף לרשימת המעקב"
     except sqlite3.OperationalError as exc:
-        return False, f"Couldn't save right now (scheduler may be mid-write) — try again: {exc}"
+        return False, f"לא ניתן היה לשמור כרגע (ייתכן שהתזמון באמצע כתיבה) — נסו שוב: {exc}"
 
 
 def remove_from_watchlist(symbol: str) -> tuple[bool, str]:
@@ -242,9 +242,9 @@ def remove_from_watchlist(symbol: str) -> tuple[bool, str]:
         conn.close()
         load_watchlist_symbols.clear()
         load_watchlist_details.clear()
-        return True, f"Removed {symbol}"
+        return True, f"{symbol} הוסר"
     except sqlite3.OperationalError as exc:
-        return False, f"Couldn't save right now (scheduler may be mid-write) — try again: {exc}"
+        return False, f"לא ניתן היה לשמור כרגע (ייתכן שהתזמון באמצע כתיבה) — נסו שוב: {exc}"
 
 
 # --- Chat conversations (persisted, multiple, resumable — see storage/schema.sql) ---
