@@ -63,6 +63,24 @@ def _f(val) -> Optional[float]:
         return None
 
 
+def _log_raw_fields(endpoint: str, items: list[dict]) -> None:
+    """TEMPORARY diagnostic (2026-10-02): dumps the full raw key set + one
+    sample item from each BPC endpoint at INFO level, one-time per process.
+    Purpose: confirm which fields each endpoint actually returns beyond what
+    _fetch_v1_fda_calendar/_fetch_v1_pdufa_calendar/fetch_bpc_historical
+    currently map — found bpc_approval_prob/bpc_prog_prob already captured
+    but unused in scoring; checking for anything else worth wiring in
+    (e.g. a true outcome/result field on historical-catalysts) before
+    building that out. Public biotech catalyst metadata only, nothing
+    sensitive. Remove once the audit is done."""
+    import json
+    if not items:
+        logger.info(f"BPC field audit [{endpoint}]: 0 items returned")
+        return
+    logger.info(f"BPC field audit [{endpoint}]: keys={sorted(items[0].keys())}")
+    logger.info(f"BPC field audit [{endpoint}]: sample={json.dumps(items[0], default=str)[:1500]}")
+
+
 def _extract_public_items(payload: dict) -> list[dict]:
     """The public calendar endpoint (PUBLIC_API) returns {"data": [...],
     "links": ..., "meta": {"total": ..., "last_page": ...}, ...} — the
@@ -118,6 +136,7 @@ def _fetch_v1_fda_calendar() -> list[dict]:
         items = resp.json()
         if not isinstance(items, list):
             items = items.get("data", [])
+        _log_raw_fields("fda-calendar", items)
 
         for item in items:
             try:
@@ -191,6 +210,7 @@ def _fetch_v1_pdufa_calendar() -> list[dict]:
         items = resp.json()
         if not isinstance(items, list):
             items = items.get("data", [])
+        _log_raw_fields("pdufa-calendar", items)
 
         for item in items:
             # Each item has pdufa_date and optionally advisory_committee_date
@@ -257,6 +277,7 @@ def fetch_bpc_historical() -> list[dict]:
         items = resp.json()
         if not isinstance(items, list):
             items = items.get("data", [])
+        _log_raw_fields("historical-catalysts", items)
 
         for item in items:
             results.append({
@@ -301,6 +322,7 @@ def _fetch_public_calendar() -> list[dict]:
         )
         resp.raise_for_status()
         items = _extract_public_items(resp.json())
+        _log_raw_fields("public-fda-calendar", items)
 
         for item in items:
             cat_date = _parse_bpc_date(item.get("catalyst_date"))
