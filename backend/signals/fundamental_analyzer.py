@@ -36,9 +36,21 @@ EVENT_TYPE_SCORES = {
 }
 
 
-def _score_cash_runway(total_cash: Optional[float], operating_cf: Optional[float]) -> float:
-    """Score cash runway in months. Profitable companies score 100."""
+def _score_cash_runway(
+    total_cash: Optional[float],
+    operating_cf: Optional[float],
+    bpc_months_cash: Optional[float] = None,
+) -> float:
+    """Score cash runway in months. Profitable companies score 100.
+
+    bpc_months_cash (BiopharmCatalyst's own pre-computed "months of cash"
+    estimate, calculated_est_months_cash on its public endpoint) is used
+    directly when yfinance didn't give us total_cash — a real fallback, not
+    a guess, and valuable right now since yfinance's fundamentals fetch is
+    broken in production (Yahoo's crumb/401 wall — see yfinance_client.py)."""
     if total_cash is None:
+        if bpc_months_cash is not None:
+            return _score_months(bpc_months_cash)
         return 50.0  # unknown — neutral
     if operating_cf is None or operating_cf >= 0:
         return 90.0  # profitable or unknown burn — good
@@ -47,6 +59,10 @@ def _score_cash_runway(total_cash: Optional[float], operating_cf: Optional[float
     if monthly_burn == 0:
         return 90.0
     months = total_cash / monthly_burn
+    return _score_months(months)
+
+
+def _score_months(months: float) -> float:
     if months >= 24:
         return 100.0
     if months >= 12:
@@ -56,6 +72,26 @@ def _score_cash_runway(total_cash: Optional[float], operating_cf: Optional[float
     if months >= 3:
         return 25.0
     return 5.0  # <3 months cash — very risky
+
+
+def _score_approval_odds(
+    bpc_approval_prob: Optional[float],
+    bpc_prog_prob: Optional[float],
+) -> float:
+    """Score BiopharmCatalyst's own historical base-rate odds for this
+    drug/indication/phase: likelihood_of_approval (LoA) and
+    likelihood_of_progressing (PoP), both already fetched and stored on
+    FdaEvent (bpc_approval_prob/bpc_prog_prob) but never read by any scoring
+    code until now. Both are 0.0-1.0 probabilities — scaled to 0-100 and
+    averaged when both are present (LoA weighted higher: it's the more
+    direct "will this drug actually get approved" question; PoP answers
+    "will the trial even finish/advance", a precondition but one step
+    removed). Neutral 50.0 when BCP didn't have data for this ticker."""
+    if bpc_approval_prob is None and bpc_prog_prob is None:
+        return 50.0
+    if bpc_approval_prob is not None and bpc_prog_prob is not None:
+        return (bpc_approval_prob * 0.65 + bpc_prog_prob * 0.35) * 100
+    return (bpc_approval_prob if bpc_approval_prob is not None else bpc_prog_prob) * 100
 
 
 def _score_short_interest(short_pct: Optional[float]) -> float:
@@ -125,10 +161,20 @@ def analyze_fundamentals(
     drug_name: Optional[str] = None,
     company: Optional[str] = None,
     yfinance_client=None,
+    bpc_approval_prob: Optional[float] = None,
+    bpc_prog_prob: Optional[float] = None,
+    bpc_months_cash: Optional[float] = None,
     **kwargs,
 ) -> dict:
     """
     Pull and score fundamental data for a ticker.
+
+    bpc_approval_prob/bpc_prog_prob/bpc_months_cash come from the matching
+    FdaEvent row (BiopharmCatalyst's own historical_loa/historical_pop/
+    calculated_est_months_cash) when the caller has one — see analyzer.py's
+    analyze_ticker(), which looks it up by fda_event_id. All three are
+    genuinely optional: a ticker scored without a known FdaEvent (or one BCP
+    had no data for) just gets the yfinance-only behavior this always had.
 
     Returns:
         fundamental_score   float 0-100
@@ -139,10 +185,11 @@ def analyze_fundamentals(
     kwargs["company"]   = company
     raw = _fetch_yfinance_fundamentals(ticker)
 
-    s_cash  = _score_cash_runway(raw.get("total_cash"), raw.get("operating_cf"))
+    s_cash  = _score_cash_runway(raw.get("total_cash"), raw.get("operating_cf"), bpc_months_cash)
     s_short = _score_short_interest(raw.get("short_pct"))
     s_anal  = _score_analyst_consensus(raw.get("rec_mean"))
     s_inst  = _score_institutional_ownership(raw.get("inst_pct"))
+    s_bpc   = _score_approval_odds(bpc_approval_prob, bpc_prog_prob)
 
     # Deep clinical analysis (ClinicalTrials.gov + OpenFDA)
     clinical = {"clinical_score": 50.0, "clinical_detail": {}}
@@ -159,13 +206,22 @@ def analyze_fundamentals(
 
     s_clinical = clinical["clinical_score"]
 
-    # Weights: financial 55% + clinical 45%
+    # Weights: financial 55% + clinical 35% + BCP historical approval odds 10%.
+    # Was financial 55%/clinical 45% with no BCP component at all — clinical
+    # gave up 10pts to make room for s_bpc rather than touching cash/short/
+    # analyst/institutional, since those four are independently-sourced
+    # (yfinance) signals this score already relied on, while s_bpc and
+    # s_clinical both answer "how likely is this drug to actually work/get
+    # approved" from two different angles (BCP: historical base rate for this
+    # phase/indication; clinical_analyzer: this specific trial's own design/
+    # results) — closest existing weight to trade off against.
     score = (
         s_cash     * 0.20 +
         s_short    * 0.15 +
         s_anal     * 0.15 +
         s_inst     * 0.05 +
-        s_clinical * 0.45
+        s_clinical * 0.35 +
+        s_bpc      * 0.10
     )
 
     clinical_detail = clinical.get("clinical_detail", {})
@@ -179,13 +235,18 @@ def analyze_fundamentals(
         "trial_risk":        bool(stopped_bad),
         "strong_trial":      bool(has_results),
         "low_institutional": s_inst < 40,
+        "bpc_low_odds":      s_bpc < 30 and (bpc_approval_prob is not None or bpc_prog_prob is not None),
     }
 
+    cash_months = _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf"))
     detail = {
-        "cash_months":      _estimate_cash_months(raw.get("total_cash"), raw.get("operating_cf")),
+        "cash_months":       cash_months if cash_months is not None else bpc_months_cash,
+        "cash_months_source": "yfinance" if cash_months is not None else ("biopharmcatalyst" if bpc_months_cash is not None else None),
         "short_pct":        raw.get("short_pct"),
         "rec_mean":         raw.get("rec_mean"),
         "inst_pct":         raw.get("inst_pct"),
+        "bpc_approval_prob": bpc_approval_prob,
+        "bpc_prog_prob":     bpc_prog_prob,
         "clinical_score":   clinical.get("clinical_score"),
         "clinical_detail":  clinical_detail,
         "component_scores": {
@@ -194,6 +255,7 @@ def analyze_fundamentals(
             "analyst":        round(s_anal, 1),
             "institutional":  round(s_inst, 1),
             "clinical":       round(s_clinical, 1),
+            "bpc_odds":       round(s_bpc, 1),
         },
     }
 

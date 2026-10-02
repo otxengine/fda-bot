@@ -360,7 +360,11 @@ def _fetch_public_calendar() -> list[dict]:
                 "bpc_float":        _f(item.get("shareinfo_float")),
                 "bpc_approval_prob": _f(item.get("likelihood_of_approval")),
                 "bpc_months_cash":  _f(item.get("calculated_est_months_cash")),
-                "bpc_net_cash":     _f(item.get("calculated_net_cash")),
+                # Was "calculated_net_cash" — not a real field on this endpoint
+                # (confirmed live via the field audit: it's "calculated_est_net_cash",
+                # matching calculated_est_live_cash/calculated_est_months_cash right
+                # next to it) — the typo meant bpc_net_cash was always None.
+                "bpc_net_cash":     _f(item.get("calculated_est_net_cash")),
                 "bpc_cash_burn":    _f(item.get("monthly_cash_burn_not_adjusted")),
                 "bpc_trial_id":     item.get("clinical_trial_id"),
                 "bpc_next_label":   item.get("next_catalyst_label"),
@@ -419,9 +423,21 @@ def scrape_biopharmcatalyst(include_all_phases: bool = True) -> list[dict]:
                 t = ev["ticker"]
                 if t in pub_map:
                     pub = pub_map[t]
+                    # Was missing bpc_price_to_book/bpc_months_cash/bpc_net_cash/
+                    # bpc_cash_burn — the public endpoint fetch (_fetch_public_calendar)
+                    # already pulls all four (confirmed live via the field audit),
+                    # but this merge step silently dropped them before they ever
+                    # reached FdaEvent, so cash-runway data never reached the DB on
+                    # the normal (BPC_API_KEY-set) path. fundamental_analyzer.py
+                    # now falls back to these when yfinance's own cash data is
+                    # missing (yfinance's fundamentals fetch is currently broken —
+                    # see backend/data/yfinance_client.py 401 "Invalid Crumb"
+                    # errors), so this gap meant that fallback had nothing to use.
                     for field in ("bpc_price","bpc_change_pct","bpc_rel_volume",
                                   "bpc_volume","bpc_avg_volume","bpc_optionable",
-                                  "bpc_market_cap","bpc_insider_pct","bpc_float"):
+                                  "bpc_market_cap","bpc_insider_pct","bpc_float",
+                                  "bpc_price_to_book","bpc_months_cash",
+                                  "bpc_net_cash","bpc_cash_burn"):
                         if pub.get(field) is not None:
                             ev[field] = pub[field]
         except Exception as e:

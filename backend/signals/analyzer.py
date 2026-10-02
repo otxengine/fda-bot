@@ -255,6 +255,21 @@ def analyze_ticker(
             logger.debug(f"Learned weights fetch {ticker}: {e}")
 
     # ── Fundamental analysis ──────────────────────────────────────────────────
+    # BCP's own historical approval/progression odds + cash-runway estimate,
+    # when we have a matching FdaEvent row — see fundamental_analyzer.py's
+    # analyze_fundamentals() docstring for why these three specifically.
+    bpc_approval_prob = bpc_prog_prob = bpc_months_cash = None
+    if db and fda_event_id:
+        try:
+            from backend.models import FdaEvent
+            fda_event = db.query(FdaEvent).filter(FdaEvent.id == fda_event_id).first()
+            if fda_event:
+                bpc_approval_prob = fda_event.bpc_approval_prob
+                bpc_prog_prob     = fda_event.bpc_prog_prob
+                bpc_months_cash   = fda_event.bpc_months_cash
+        except Exception as e:
+            logger.debug(f"FdaEvent BPC fields lookup failed for {ticker}: {e}")
+
     fund_result = {"fundamental_score": 50.0, "fundamental_flags": {}, "fundamental_detail": {}}
     try:
         from backend.signals.fundamental_analyzer import analyze_fundamentals
@@ -263,6 +278,9 @@ def analyze_ticker(
             event_type=event_type,
             drug_name=drug_name,
             company=company,
+            bpc_approval_prob=bpc_approval_prob,
+            bpc_prog_prob=bpc_prog_prob,
+            bpc_months_cash=bpc_months_cash,
         )
     except Exception as e:
         logger.debug(f"Fundamental analysis failed for {ticker}: {e}")
