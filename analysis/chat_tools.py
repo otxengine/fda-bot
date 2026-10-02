@@ -473,6 +473,23 @@ _DISPATCH: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace NaN/Infinity floats (routine in these results —
+    pandas marks any missing/undefined metric, like a stock with no analyst
+    estimates yet, as NaN) with None. json.dumps's default allow_nan=True
+    emits them as bare NaN/Infinity tokens, which are valid Python/JS but NOT
+    valid JSON — a downstream strict JSON.parse (or Anthropic's own API)
+    could choke on it, so this sanitizes the whole tree before it ever
+    becomes a JSON string."""
+    if isinstance(obj, float) and (obj != obj or obj in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def call_tool(conn: sqlite3.Connection, name: str, tool_input: dict[str, Any]) -> str:
     fn = _DISPATCH.get(name)
     if fn is None:
@@ -481,7 +498,7 @@ def call_tool(conn: sqlite3.Connection, name: str, tool_input: dict[str, Any]) -
         result = fn(conn, **tool_input)
     except Exception as exc:  # noqa: BLE001 — a tool error should be a message back to the model, not a crash
         result = {"error": str(exc)}
-    return json.dumps(result, default=str)
+    return json.dumps(_json_safe(result), default=str)
 
 
 # --- Chat loop --------------------------------------------------------------

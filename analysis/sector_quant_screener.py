@@ -142,6 +142,15 @@ def build_quant_table(conn: sqlite3.Connection) -> pd.DataFrame:
     df["peg_ratio"] = df["pe_trailing"].where(df["pe_trailing"] > 0) / (df["earnings_growth_f1"] * 100)
     df["peg_ratio_next"] = df["pe_trailing"].where(df["pe_trailing"] > 0) / (df["earnings_growth_f2"] * 100)
 
+    # earnings_growth_f1/f2 can legitimately be exactly 0.0 (F1 consensus EPS
+    # == F0 actual, i.e. flat growth), which turns the PEG division above into
+    # +/-inf rather than NaN. inf is valid Python/pandas but not valid JSON —
+    # it breaks the dashboard's dataframe grid (and chat_tools' tool-result
+    # JSON) with a frontend "Unexpected token" JSON.parse crash. Collapse it
+    # to NaN like every other "undefined" cell in this table, here, once, so
+    # nothing downstream (display or chat) has to special-case it.
+    df = df.replace([float("inf"), float("-inf")], float("nan"))
+
     return df
 
 
